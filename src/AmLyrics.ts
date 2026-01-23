@@ -1,7 +1,8 @@
 import { html, css, LitElement } from 'lit';
 import { property, state, query } from 'lit/decorators.js';
+import { GoogleService } from './GoogleService.js';
 
-const VERSION = '0.6.3';
+const VERSION = '0.6.5';
 const INSTRUMENTAL_THRESHOLD_MS = 3000; // Show ellipsis for gaps >= 3s
 
 const KPOE_SERVERS = [
@@ -18,6 +19,7 @@ interface Syllable {
   part: boolean;
   timestamp: number;
   endtime: number;
+  romanizedText?: string;
 }
 
 interface LyricsLine {
@@ -30,12 +32,8 @@ interface LyricsLine {
   isWordSynced?: boolean;
   alignment?: 'start' | 'end';
   songPart?: string;
-}
-
-interface LyricsResponse {
-  info: string;
-  type: string;
-  content: LyricsLine[];
+  romanizedText?: string;
+  translation?: string;
 }
 
 interface SongMetadata {
@@ -159,7 +157,7 @@ export class AmLyrics extends LitElement {
       -webkit-text-fill-color: transparent;
       /* Fallback for browsers that don't support background-clip: text */
       color: #888;
-      white-space: pre-wrap;
+      /* white-space: pre-wrap; */
       /* Performance optimizations */
       transform: translate3d(0, 0, 0);
       will-change: background-size;
@@ -343,7 +341,64 @@ export class AmLyrics extends LitElement {
       display: flex;
       padding: 10px 0;
       margin-bottom: 10px;
+      gap: 10px;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .header-controls {
+      display: flex;
+      gap: 8px;
+    }
+
+    .download-controls {
+      display: flex;
+      align-items: center;
       gap: 4px;
+    }
+
+    .control-button {
+      background: transparent;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      padding: 2px 8px;
+      font-size: 0.8em;
+      color: #888;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .control-button:hover {
+      color: #555;
+      border-color: #aaa;
+    }
+
+    .control-button.active {
+      background-color: var(--am-lyrics-highlight-color, #000);
+      border-color: var(--am-lyrics-highlight-color, #000);
+      color: #fff;
+    }
+
+    .main-line-wrapper.small {
+      font-size: 0.5em; /* 50% size when translation is active */
+      opacity: 0.8;
+      display: block;
+      margin-bottom: 0px; /* Reduced from 4px */
+    }
+
+    .translation-line {
+      font-size: 1em; /* Normal size (relative to container font-size) */
+      font-weight: bold; /* Bold like active line usually is */
+      display: block;
+      margin-top: 0px; /* Reduced from 4px */
+      line-height: 1.1;
+    }
+
+    .romanized-line {
+      font-size: 0.5em;
+      color: #aaa;
+      display: block;
+      margin-top: 2px;
     }
   `;
 
@@ -385,6 +440,84 @@ export class AmLyrics extends LitElement {
 
   @property({ type: Boolean })
   interpolate = true;
+
+  @state()
+  private showRomanization = false;
+
+  @state()
+  private showTranslation = false;
+
+  private async toggleRomanization() {
+    this.showRomanization = !this.showRomanization;
+    await this.applyRomanization();
+  }
+
+  private async applyRomanization() {
+    if (this.showRomanization && this.lyrics) {
+      const needsRomanization = this.lyrics.some(
+        l =>
+          !l.romanizedText && (!l.text || !l.text.some(s => s.romanizedText)),
+      );
+
+      if (needsRomanization) {
+        this.isLoading = true;
+        try {
+          const romanizedLines = await GoogleService.romanize(this.lyrics);
+          this.lyrics = romanizedLines;
+        } catch (e) {
+          // eslint-disable-next-line no-console
+          console.error('Romanization failed', e);
+        } finally {
+          this.isLoading = false;
+        }
+      }
+    }
+  }
+
+  private async toggleTranslation() {
+    this.showTranslation = !this.showTranslation;
+    await this.applyTranslation();
+  }
+
+  private async applyTranslation() {
+    if (this.showTranslation && this.lyrics) {
+      const needsTranslation = this.lyrics.some(l => !l.translation);
+      if (needsTranslation) {
+        this.isLoading = true;
+        try {
+          // Prepare batch: extract text from all lines
+          const textToTranslate = this.lyrics.map(line => {
+            if (line.translation) return '';
+            return line.text.map(s => s.text).join('');
+          });
+
+          // If all are empty, skip
+          if (textToTranslate.every(t => !t)) {
+            this.isLoading = false;
+            return;
+          }
+
+          const result = await GoogleService.translate(textToTranslate, 'en');
+          const translations = Array.isArray(result) ? result : [result];
+
+          const newLyrics = this.lyrics.map((line, index) => {
+            if (line.translation) return line;
+            return {
+              ...line,
+              translation: translations[index] || undefined,
+            };
+          });
+
+          this.lyrics = newLyrics;
+        } catch (e) {
+          // eslint-disable-next-line no-console
+          console.error('Translation failed', e);
+        } finally {
+          this.isLoading = false;
+        }
+      }
+    }
+  }
 
   @property({ type: Number })
   duration?: number;
@@ -476,7 +609,7 @@ export class AmLyrics extends LitElement {
         if (youLyResult && youLyResult.lines.length > 0) {
           this.lyrics = youLyResult.lines;
           this.lyricsSource = youLyResult.source ?? 'LyricsPlus (KPoe)';
-          this.onLyricsLoaded();
+          await this.onLyricsLoaded();
           return;
         }
       }
@@ -488,7 +621,7 @@ export class AmLyrics extends LitElement {
     }
   }
 
-  private onLyricsLoaded() {
+  private async onLyricsLoaded() {
     this.activeLineIndices = [];
     this.activeMainWordIndices.clear();
     this.activeBackgroundWordIndices.clear();
@@ -503,6 +636,17 @@ export class AmLyrics extends LitElement {
       window.setTimeout(() => {
         this.isProgrammaticScroll = false;
       }, 100);
+    }
+
+    await this.autoProcessLyrics();
+  }
+
+  private async autoProcessLyrics() {
+    if (this.showRomanization) {
+      await this.applyRomanization();
+    }
+    if (this.showTranslation) {
+      await this.applyTranslation();
     }
   }
 
@@ -707,6 +851,8 @@ export class AmLyrics extends LitElement {
 
     params.append('source', DEFAULT_KPOE_SOURCE_ORDER);
 
+    let fallbackResult: YouLyPlusLyricsResult | null = null;
+
     for (const base of KPOE_SERVERS) {
       const normalizedBase = base.endsWith('/') ? base.slice(0, -1) : base;
       const url = `${normalizedBase}/v2/lyrics/get?${params.toString()}`;
@@ -731,12 +877,23 @@ export class AmLyrics extends LitElement {
             payload?.metadata?.source ||
             payload?.metadata?.provider ||
             'LyricsPlus (KPoe)';
-          return { lines, source: sourceLabel };
+
+          const result = { lines, source: sourceLabel };
+
+          // If source is Apple, return immediately (best quality)
+          if (sourceLabel.toLowerCase() === 'apple') {
+            return result;
+          }
+
+          // Otherwise, store as fallback if we don't have one yet
+          if (!fallbackResult) {
+            fallbackResult = result;
+          }
         }
       }
     }
 
-    return null;
+    return fallbackResult;
   }
 
   private static convertKPoeLyrics(payload: any): LyricsLine[] | null {
@@ -771,6 +928,7 @@ export class AmLyrics extends LitElement {
       agentEntries.sort((a, b) => a[0].localeCompare(b[0]));
 
       const personAgents = agentEntries.filter(
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
         ([_, agentData]: [string, any]) => agentData.type === 'person',
       );
       const personIndexMap = new Map();
@@ -847,6 +1005,24 @@ export class AmLyrics extends LitElement {
       const hasWordSync =
         mainSyllables.length > 0 || backgroundSyllables.length > 0;
 
+      const { transliteration } = entry;
+      let romanizedTextFromPayload: string | undefined;
+
+      if (transliteration) {
+        romanizedTextFromPayload = transliteration.text;
+        // If syllabus data matches, map it to main syllables
+        if (
+          Array.isArray(transliteration.syllabus) &&
+          transliteration.syllabus.length === mainSyllables.length
+        ) {
+          transliteration.syllabus.forEach((s: any, i: number) => {
+            if (mainSyllables[i]) {
+              mainSyllables[i].romanizedText = s.text;
+            }
+          });
+        }
+      }
+
       const lineResult: LyricsLine = {
         text: mainSyllables,
         background: backgroundSyllables.length > 0,
@@ -857,9 +1033,10 @@ export class AmLyrics extends LitElement {
           : false,
         timestamp: lineStart,
         endtime: start + duration,
-        isWordSynced: hasWordSync,
+        isWordSynced: isLineType ? false : hasWordSync,
         alignment,
         songPart: entry.element?.songPart,
+        romanizedText: romanizedTextFromPayload,
       };
 
       lines.push(lineResult);
@@ -1652,20 +1829,24 @@ export class AmLyrics extends LitElement {
                   progress = 1;
                 }
 
+                const text = syllable.text || '';
+                const hasTrailingSpace = text.endsWith(' ');
+                const contentText = hasTrailingSpace ? text.slice(0, -1) : text;
+
                 return html`<span
-                  class="progress-text"
-                  style="--line-progress: ${progress *
-                  100}%; margin-right: 0; --transition-style: ${isLineActive
-                    ? 'all'
-                    : 'color'}"
-                  >${syllable.text}</span
-                >`;
+                    class="progress-text"
+                    style="--line-progress: ${progress *
+                    100}%; margin-right: 0; --transition-style: ${isLineActive
+                      ? 'all'
+                      : 'color'}"
+                    >${contentText}</span
+                  >${hasTrailingSpace ? ' ' : ''}`;
               })}
             </span>`
           : '';
 
-        // Create main text element
-        const mainTextElement = html`<span>
+        // Create main text element (original lyrics)
+        const mainTextContent = html`<span>
           ${line.text.map((syllable, wordIndex) => {
             const activeMainWordIndex =
               this.activeMainWordIndices.get(lineIndex) ?? -1;
@@ -1689,16 +1870,114 @@ export class AmLyrics extends LitElement {
               progress = 1;
             }
 
+            const text = syllable.text || '';
+            const hasTrailingSpace = text.endsWith(' ');
+            const contentText = hasTrailingSpace ? text.slice(0, -1) : text;
+
             return html`<span
-              class="progress-text"
-              style="--line-progress: ${progress *
-              100}%; margin-right: 0; --transition-style: ${isLineActive
-                ? 'all'
-                : 'color'}"
-              >${syllable.text}</span
-            >`;
+                class="progress-text"
+                style="--line-progress: ${progress *
+                100}%; margin-right: 0; --transition-style: ${isLineActive
+                  ? 'all'
+                  : 'color'}"
+                >${contentText}</span
+              >${hasTrailingSpace ? ' ' : ''}`;
           })}
         </span>`;
+
+        // Logic for Display Mode
+        // If Translation is ON:
+        //  - Original (mainTextContent) becomes small and top.
+        //  - Translation becomes Big and Bottom.
+        // If Translation is OFF:
+        //  - Original is Big.
+
+        const showTranslationLine = this.showTranslation && line.translation;
+        const showRomanizationLine =
+          this.showRomanization &&
+          (line.romanizedText ||
+            (line.text && line.text.some(s => s.romanizedText)));
+
+        let mainContent;
+
+        if (showTranslationLine) {
+          // Translation Mode
+
+          // 1. Original Text (Small, Top) - retains word sync
+          const originalWrapper = html`<div class="main-line-wrapper small">
+            ${mainTextContent}
+          </div>`;
+
+          // 2. Translation Text (Big, Bottom) - line sync (highlight whole line if active)
+          const translationText = html`<div class="translation-line">
+            <span
+              class="progress-text"
+              style="--line-progress: ${isLineActive ? 100 : 0}%"
+            >
+              ${line.translation}
+            </span>
+          </div>`;
+
+          mainContent = html` ${originalWrapper} ${translationText} `;
+        } else {
+          // Standard Mode
+          mainContent = mainTextContent;
+        }
+
+        let romanizationInner;
+        if (line.text && line.text.some(s => s.romanizedText)) {
+          // Word-synced romanisation
+          romanizationInner = html`<span>
+            ${line.text.map((syllable, wordIndex) => {
+              const activeMainWordIndex =
+                this.activeMainWordIndices.get(lineIndex) ?? -1;
+              const isWordActive =
+                isLineActive && wordIndex === activeMainWordIndex;
+              const isWordPassed =
+                isLineActive &&
+                (wordIndex < activeMainWordIndex ||
+                  (activeMainWordIndex === -1 &&
+                    this.currentTime > syllable.endtime));
+              let progress = 0;
+              if (isWordActive) {
+                if (line.isWordSynced === false) {
+                  progress = 1;
+                } else {
+                  progress = this.interpolate
+                    ? (this.mainWordProgress.get(lineIndex) ?? 0)
+                    : 1;
+                }
+              } else if (isWordPassed) {
+                progress = 1;
+              }
+
+              const text = syllable.romanizedText || '';
+              const hasTrailingSpace = text.endsWith(' ');
+              const contentText = hasTrailingSpace ? text.slice(0, -1) : text;
+
+              return html`<span
+                  class="progress-text"
+                  style="--line-progress: ${progress *
+                  100}%; margin-right: 0; --transition-style: ${isLineActive
+                    ? 'all'
+                    : 'color'}"
+                  >${contentText}</span
+                >${hasTrailingSpace ? ' ' : ''}`;
+            })}
+          </span>`;
+        } else {
+          // Line-synced romanisation
+          romanizationInner = html` <span
+            class="progress-text"
+            style="--line-progress: ${isLineActive ? 100 : 0}%"
+          >
+            ${line.romanizedText}
+          </span>`;
+        }
+
+        const romanizationContent = showRomanizationLine
+          ? html` <div class="romanized-line">${romanizationInner}</div> `
+          : '';
 
         let maybeInstrumentalBlock: unknown = null;
         if (instrumental && instrumental.insertBeforeIndex === lineIndex) {
@@ -1734,7 +2013,7 @@ export class AmLyrics extends LitElement {
             }}
           >
             ${backgroundPlacement === 'before' ? backgroundTextElement : ''}
-            ${mainTextElement}
+            ${mainContent} ${romanizationContent}
             ${backgroundPlacement === 'after' ? backgroundTextElement : ''}
           </div>
         `;
@@ -1746,62 +2025,85 @@ export class AmLyrics extends LitElement {
         ${!this.isLoading && this.lyrics && this.lyrics.length > 0
           ? html`
               <div class="lyrics-header">
-                <select
-                  class="format-select"
-                  @change=${(e: Event) => {
-                    this.downloadFormat = (e.target as HTMLSelectElement)
-                      .value as 'lrc' | 'ttml';
-                  }}
-                  .value=${this.downloadFormat}
-                  @click=${(e: Event) => e.stopPropagation()}
-                >
-                  <option value="auto">Auto</option>
-                  <option value="lrc">LRC</option>
-                  <option value="ttml">TTML</option>
-                </select>
-                <button
-                  class="download-button"
-                  @click=${this.downloadLyrics}
-                  title="Download Lyrics"
-                >
-                  <svg
-                    xmlns="http://www.w3.org/2000/svg"
-                    width="16"
-                    height="16"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    class="lucide lucide-download-icon lucide-download"
+                <div class="header-controls">
+                  <button
+                    class="control-button ${this.showRomanization
+                      ? 'active'
+                      : ''}"
+                    @click=${this.toggleRomanization}
+                    title="Toggle Romanization"
                   >
-                    <path d="M12 15V3" />
-                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                    <path d="m7 10 5 5 5-5" />
-                  </svg>
-                </button>
+                    Rom
+                  </button>
+                  <button
+                    class="control-button ${this.showTranslation
+                      ? 'active'
+                      : ''}"
+                    @click=${this.toggleTranslation}
+                    title="Toggle Translation"
+                  >
+                    Trans
+                  </button>
+                </div>
+                <div class="download-controls">
+                  <select
+                    class="format-select"
+                    @change=${(e: Event) => {
+                      this.downloadFormat = (e.target as HTMLSelectElement)
+                        .value as 'lrc' | 'ttml';
+                    }}
+                    .value=${this.downloadFormat}
+                    @click=${(e: Event) => e.stopPropagation()}
+                  >
+                    <option value="auto">Auto</option>
+                    <option value="lrc">LRC</option>
+                    <option value="ttml">TTML</option>
+                  </select>
+                  <button
+                    class="download-button"
+                    @click=${this.downloadLyrics}
+                    title="Download Lyrics"
+                  >
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      width="16"
+                      height="16"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      class="lucide lucide-download-icon lucide-download"
+                    >
+                      <path d="M12 15V3" />
+                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                      <path d="m7 10 5 5 5-5" />
+                    </svg>
+                  </button>
+                </div>
               </div>
             `
           : ''}
         ${renderContent()}
         ${!this.isLoading
           ? html`
-            <footer class="lyrics-footer">
-              <div class="footer-content">
-                <span class="source-info">Source: ${sourceLabel}</span>
-                <span class="version-info">
-                  v${VERSION} •
-                  
-                    <a href="https://github.com/uimaxbai/apple-music-web-components"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    >Star me on GitHub</a
-                  >
-                </span>
-              </div>
-            </footer>
-          `
+              <footer class="lyrics-footer">
+                <div class="footer-content">
+                  <span class="source-info">Source: ${sourceLabel}</span>
+                  <span class="version-info">
+                    v${VERSION} •
+
+                    <a
+                      href="https://github.com/uimaxbai/apple-music-web-components"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      >Star me on GitHub</a
+                    >
+                  </span>
+                </div>
+              </footer>
+            `
           : ''}
       </div>
     `;

@@ -75,7 +75,7 @@ am-lyrics {
 
 ## Lyrics providers
 
-The component now favours the LyricsPlus (KPoe) API that powers [YouLyPlus](https://github.com/ibratabian17/YouLyPlus).
+The component now only uses the LyricsPlus (KPoe) API that powers [YouLyPlus](https://github.com/ibratabian17/YouLyPlus).
 
 1. Provide `song-title` and `song-artist` (plus optional `song-album`/`song-duration`) to request word-synced lyrics from LyricsPlus. A standalone `query` such as `"Bad Habit - Steve Lacy"` also works—the component looks up the metadata through LyricsPlus' `/v1/songlist/search` endpoint.
 2. If LyricsPlus cannot serve lyrics or metadata is missing, the component automatically falls back to the legacy Apple Music endpoint using the best available identifiers (`query`, `music-id`, `isrc`). Requests that rely solely on `music-id` are handled exclusively by this backup service because LyricsPlus does not support Apple IDs.
