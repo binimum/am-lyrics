@@ -87,8 +87,8 @@ export class AmLyrics extends LitElement {
       --lyplus-padding-line: 10px;
       --lyplus-padding-gap: 0.4em;
       --lyplus-border-radius-base: 0.6em;
-      --lyplus-gap-dot-size: 0.4em;
-      --lyplus-gap-dot-margin: 0.1em;
+      --lyplus-gap-dot-size: 0.5em;
+      --lyplus-gap-dot-margin: 0.12em;
 
       --lyplus-font-size-base: 25px;
       --lyplus-font-size-base-grow: 24.5;
@@ -344,8 +344,10 @@ export class AmLyrics extends LitElement {
 
     /* --- Wipe Highlight Effect --- */
     /* IMPORTANT: Only apply to syllables WITHOUT char spans to prevent double wipe */
-    .lyrics-line.active:not(.lyrics-gap) .lyrics-syllable.highlight:not(:has(.char)),
-    .lyrics-line.active:not(.lyrics-gap) .lyrics-syllable.pre-highlight:not(:has(.char)) {
+    .lyrics-line.active:not(.lyrics-gap)
+      .lyrics-syllable.highlight:not(:has(.char)),
+    .lyrics-line.active:not(.lyrics-gap)
+      .lyrics-syllable.pre-highlight:not(:has(.char)) {
       background-repeat: no-repeat;
       background-image:
         linear-gradient(
@@ -367,7 +369,8 @@ export class AmLyrics extends LitElement {
         -0.25em 0%;
     }
 
-    .lyrics-line.active:not(.lyrics-gap) .lyrics-syllable.highlight.rtl-text:not(:has(.char)),
+    .lyrics-line.active:not(.lyrics-gap)
+      .lyrics-syllable.highlight.rtl-text:not(:has(.char)),
     .lyrics-line.active:not(.lyrics-gap)
       .lyrics-syllable.pre-highlight.rtl-text:not(:has(.char)) {
       direction: rtl;
@@ -422,18 +425,14 @@ export class AmLyrics extends LitElement {
     .lyrics-syllable:has(.char):not(.finished) {
       background-color: transparent;
       color: transparent;
-      background-image: none !important; /* Fixed: prevent double wipe */
+      background-image: none !important;
     }
 
-    /* Fix double wipe: When active and highlighted, if it has chars, REMOVE the syllable background */
+    /* Prevent double wipe: syllable-level gradient disabled when chars handle it */
     .lyrics-line.active:not(.lyrics-gap) .lyrics-syllable.highlight:has(.char),
     .lyrics-line.active:not(.lyrics-gap)
       .lyrics-syllable.pre-highlight:has(.char) {
       background-image: none !important;
-    }
-
-    .lyrics-syllable.char-animating {
-      background: none !important;
     }
 
     .lyrics-syllable span.char {
@@ -450,6 +449,7 @@ export class AmLyrics extends LitElement {
         transform 0.7s ease;
     }
 
+    /* Single consolidated rule for active char spans */
     .lyrics-line.active .lyrics-syllable span.char {
       background-image:
         linear-gradient(
@@ -488,38 +488,6 @@ export class AmLyrics extends LitElement {
       filter: drop-shadow(0 0 0 rgba(255, 255, 255, 0));
     }
 
-    .lyrics-line.active .lyrics-syllable span.char {
-      background-image:
-        linear-gradient(
-          90deg,
-          #ffffff00 0%,
-          var(--lyplus-text-primary, #fff) 50%,
-          #0000 100%
-        ),
-        linear-gradient(
-          90deg,
-          var(--lyplus-text-primary, #fff) 100%,
-          #0000 100%
-        );
-      background-clip: text;
-      -webkit-background-clip: text;
-      background-size:
-        0.5em 100%,
-        0% 100%;
-      background-position:
-        -0.5em 0%,
-        -0.25em 0%;
-      background-repeat: no-repeat;
-      transform-origin: 50% 80%;
-      transform: matrix3d(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1);
-      transition:
-        transform 0.7s ease,
-        color 0.18s,
-        filter 0.5s ease;
-      filter: drop-shadow(0 0 0 rgba(255, 255, 255, 0));
-      will-change: background, transform, filter;
-    }
-
     .lyrics-line.active .lyrics-syllable span.char.highlight {
       background-image:
         linear-gradient(
@@ -537,13 +505,33 @@ export class AmLyrics extends LitElement {
         calc(100% + 0.25em) 0%;
     }
 
+    /* Pre-highlight for char spans (cross-syllable glow anticipation) */
+    .lyrics-line.active .lyrics-syllable.pre-highlight span.char {
+      background-image:
+        linear-gradient(
+          90deg,
+          #ffffff00 0%,
+          var(--lyplus-text-primary, #fff) 50%,
+          #0000 100%
+        ),
+        linear-gradient(
+          90deg,
+          var(--lyplus-text-primary, #fff) 100%,
+          #0000 100%
+        );
+      background-size:
+        0.5em 100%,
+        0% 100%;
+      background-position:
+        -0.5em 0%,
+        -0.25em 0%;
+    }
+
     .lyrics-word.growable .lyrics-syllable.cleanup .char {
       transform: translateY(-3.5%) translateZ(1px);
     }
 
-    /* Glow effect for long words is handled by grow-dynamic animation with filter: drop-shadow */
-    /* Do NOT use CSS text-shadow here as it causes abrupt on/off instead of fade in/out */
-
+    /* Rise effect: non-growable highlighted syllables rise slightly */
     .lyrics-line.active:not(.lyrics-gap)
       .lyrics-word:not(.growable)
       .lyrics-syllable.highlight {
@@ -561,34 +549,54 @@ export class AmLyrics extends LitElement {
       box-sizing: content-box;
       background-clip: unset;
       transition:
-        padding 0.3s 0.5s,
-        height 0.3s 0.5s,
-        opacity 0.2s 0.5s,
+        padding 0.25s 0.3s ease-out,
+        height 0.25s 0.3s ease-out,
+        opacity 0.2s 0.25s,
         transform 0.3s var(--lyrics-line-delay, 0ms);
     }
 
     .lyrics-gap.active {
-      height: 1em;
+      height: 1.3em;
       padding: var(--lyplus-padding-gap);
       opacity: 1;
+      overflow: visible;
       transition:
-        padding 0.3s,
-        height 0.3s,
-        opacity 0.2s 0.3s,
+        padding 0.2s ease-out,
+        height 0.2s ease-out,
+        opacity 0.15s,
         transform 0.3s;
       will-change: height, opacity, padding;
+    }
+
+    /* Exiting state: keep gap visible while dots jump up */
+    .lyrics-gap.gap-exiting {
+      height: 1.3em;
+      padding: var(--lyplus-padding-gap);
+      opacity: 1;
+      overflow: visible;
+      transition:
+        padding 0.25s 0.3s ease-out,
+        height 0.25s 0.3s ease-out,
+        opacity 0.2s 0.25s,
+        transform 0.3s;
     }
 
     .lyrics-gap .main-vocal-container {
       transform: translateY(-25%) scale(1) translateZ(0);
     }
 
-    .lyrics-gap:not(.active) .main-vocal-container {
-      animation: gap-ended 0.8s ease;
+    /* Jump animation only plays during exit, not on initial render */
+    .lyrics-gap.gap-exiting .main-vocal-container {
+      animation: gap-ended 0.3s ease forwards;
+    }
+
+    .lyrics-gap:not(.active):not(.gap-exiting) .main-vocal-container {
       transform: translateY(-25%) scale(0) translateZ(0);
     }
 
-    .lyrics-gap:not(.active) .main-vocal-container .lyrics-word {
+    .lyrics-gap:not(.active):not(.gap-exiting)
+      .main-vocal-container
+      .lyrics-word {
       animation-play-state: paused;
     }
 
@@ -610,6 +618,7 @@ export class AmLyrics extends LitElement {
 
     .lyrics-gap.active .lyrics-syllable.highlight,
     .lyrics-gap.active .lyrics-syllable.finished,
+    .lyrics-gap.gap-exiting .lyrics-syllable,
     .lyrics-gap:not(.active).post-active-line .lyrics-syllable,
     .lyrics-gap:not(.active).lyrics-activest .lyrics-syllable {
       background-color: var(--lyplus-text-primary);
@@ -1001,10 +1010,10 @@ export class AmLyrics extends LitElement {
     /* Gap dot animations */
     @keyframes gap-loop {
       from {
-        transform: scale(1.1);
+        transform: scale(1.15);
       }
       to {
-        transform: scale(0.9);
+        transform: scale(0.85);
       }
     }
 
@@ -1012,11 +1021,16 @@ export class AmLyrics extends LitElement {
       0% {
         transform: translateY(-25%) scale(1) translateZ(0);
       }
-      35% {
-        transform: translateY(-25%) scale(1.2) translateZ(0);
+      30% {
+        transform: translateY(-120%) scale(1.3) translateZ(0);
+      }
+      60% {
+        transform: translateY(-180%) scale(0.6) translateZ(0);
+        opacity: 0.5;
       }
       100% {
-        transform: translateY(-25%) scale(0) translateZ(0);
+        transform: translateY(-200%) scale(0) translateZ(0);
+        opacity: 0;
       }
     }
 
@@ -1300,8 +1314,20 @@ export class AmLyrics extends LitElement {
   @property({ type: Number })
   duration?: number;
 
-  @property({ type: Number })
-  currentTime = 0;
+  private _currentTime = 0;
+
+  @property({ type: Number, attribute: 'currenttime', hasChanged: () => false })
+  set currentTime(value: number) {
+    const oldValue = this._currentTime;
+    this._currentTime = value;
+    if (oldValue !== value && this.lyrics) {
+      this._onTimeChanged(oldValue, value);
+    }
+  }
+
+  get currentTime(): number {
+    return this._currentTime;
+  }
 
   @state()
   private isLoading = false;
@@ -1350,6 +1376,8 @@ export class AmLyrics extends LitElement {
   private isUserScrolling = false;
 
   private isProgrammaticScroll = false;
+  private isClickSeeking = false;
+  private clickSeekTimeout?: ReturnType<typeof setTimeout>;
 
   // Cached DOM elements for animation updates
   private cachedLyricsLines: HTMLElement[] = [];
@@ -1876,6 +1904,108 @@ export class AmLyrics extends LitElement {
     }
   }
 
+  /**
+   * Handle currentTime changes imperatively, bypassing Lit's render cycle.
+   * This prevents the template from re-rendering on every frame, which would
+   * reset imperative animation classes (highlight, finished, etc.) set by
+   * updateSyllablesForLine.
+   */
+  private _onTimeChanged(oldTime: number, newTime: number): void {
+    const timeDiff = Math.abs(newTime - oldTime);
+
+    const newActiveLines = this.findActiveLineIndices(newTime);
+    const oldActiveLines = this.activeLineIndices;
+
+    // Reset animation if active lines change or if we skip time.
+    // A threshold of 0.5s (500ms) is used to detect a "skip".
+    const linesChanged = !AmLyrics.arraysEqual(newActiveLines, oldActiveLines);
+
+    if (linesChanged || timeDiff > 0.5) {
+      // Reset syllables from lines that are no longer active
+      if (this.lyricsContainer) {
+        for (const lineIndex of oldActiveLines) {
+          if (!newActiveLines.includes(lineIndex)) {
+            const lineElement = this.lyricsContainer.querySelector(
+              `#lyrics-line-${lineIndex}`,
+            ) as HTMLElement;
+            if (lineElement) {
+              this.resetSyllables(lineElement, timeDiff > 0.5);
+            }
+          }
+        }
+      }
+      this.startAnimationFromTime(newTime);
+    }
+
+    // YouLyPlus-style syllable animation updates
+    if (this.lyricsContainer) {
+      // Update syllables in active lines
+      for (const lineIndex of this.activeLineIndices) {
+        const lineElement = this.lyricsContainer.querySelector(
+          `#lyrics-line-${lineIndex}`,
+        ) as HTMLElement;
+        if (lineElement) {
+          this.updateSyllablesForLine(lineElement, newTime);
+        }
+      }
+
+      // Also update syllables in active gap lines (breathing dots)
+      const activeGaps =
+        this.lyricsContainer.querySelectorAll('.lyrics-gap.active');
+      activeGaps.forEach(gapLine => {
+        this.updateSyllablesForLine(gapLine as HTMLElement, newTime);
+      });
+
+      // Imperatively manage gap active state (template doesn't re-render on time changes)
+      const allGaps = this.lyricsContainer.querySelectorAll('.lyrics-gap');
+      allGaps.forEach(gap => {
+        const gapStartTime = parseFloat(
+          gap.getAttribute('data-start-time') || '0',
+        );
+        const gapEndTime = parseFloat(gap.getAttribute('data-end-time') || '0');
+        const shouldBeActive = newTime >= gapStartTime && newTime < gapEndTime;
+        const isActive = gap.classList.contains('active');
+        const isExiting = gap.classList.contains('gap-exiting');
+
+        if (shouldBeActive && !isActive) {
+          // Entering gap: remove any leftover exit state, add active
+          gap.classList.remove('gap-exiting');
+          gap.classList.add('active');
+        } else if (!shouldBeActive && isActive && !isExiting) {
+          // Exiting gap: stage the jump animation
+          gap.classList.add('gap-exiting');
+          gap.classList.remove('active');
+          // After jump animation completes, remove gap-exiting to collapse
+          setTimeout(() => {
+            gap.classList.remove('gap-exiting');
+          }, 350);
+        }
+      });
+
+      // Track instrumental gap state
+      const currentGap = this.findInstrumentalGapAt(newTime);
+      if (currentGap) {
+        this.lastInstrumentalIndex = currentGap.insertBeforeIndex;
+      } else if (this.lastInstrumentalIndex !== null) {
+        this.lastInstrumentalIndex = null;
+      }
+
+      // Update position classes for YouLyPlus blur/opacity effect
+      if (this.activeLineIndices.length > 0) {
+        const primaryLineIndex = this.activeLineIndices[0];
+        const primaryLine = this.lyricsContainer.querySelector(
+          `#lyrics-line-${primaryLineIndex}`,
+        ) as HTMLElement;
+
+        if (primaryLine && primaryLine !== this.currentPrimaryActiveLine) {
+          this.lastPrimaryActiveLine = this.currentPrimaryActiveLine;
+          this.currentPrimaryActiveLine = primaryLine;
+          this.updatePositionClasses(primaryLine);
+        }
+      }
+    }
+  }
+
   updated(changedProperties: Map<string | number | symbol, unknown>) {
     // Handle duration reset (-1 stops playback and resets currentTime to 0)
     if (changedProperties.has('duration') && this.duration === -1) {
@@ -1923,98 +2053,31 @@ export class AmLyrics extends LitElement {
     }
 
     if (changedProperties.has('currentTime') && this.lyrics) {
-      const oldTime = (changedProperties.get('currentTime') as number) ?? 0;
-      const timeDiff = Math.abs(this.currentTime - oldTime);
-
-      const newActiveLines = this.findActiveLineIndices(this.currentTime);
-      const oldActiveLines = this.activeLineIndices;
-
-      // Reset animation if active lines change or if we skip time.
-      // A threshold of 0.5s (500ms) is used to detect a "skip".
-      const linesChanged = !AmLyrics.arraysEqual(
-        newActiveLines,
-        oldActiveLines,
-      );
-
-      if (linesChanged || timeDiff > 0.5) {
-        // Reset syllables from lines that are no longer active
-        if (this.lyricsContainer) {
-          for (const lineIndex of oldActiveLines) {
-            if (!newActiveLines.includes(lineIndex)) {
-              const lineElement = this.lyricsContainer.querySelector(
-                `#lyrics-line-${lineIndex}`,
-              ) as HTMLElement;
-              if (lineElement) {
-                this.resetSyllables(lineElement, timeDiff > 0.5);
-              }
-            }
-          }
-        }
-        this.startAnimationFromTime(this.currentTime);
-      }
-
-      // YouLyPlus-style syllable animation updates
-      const currentTimeMs = this.currentTime;
-      if (this.lyricsContainer) {
-        // Update syllables in active lines
-        for (const lineIndex of this.activeLineIndices) {
-          const lineElement = this.lyricsContainer.querySelector(
-            `#lyrics-line-${lineIndex}`,
-          ) as HTMLElement;
-          if (lineElement) {
-            this.updateSyllablesForLine(lineElement, currentTimeMs);
-          }
-        }
-
-        // Also update syllables in active gap lines (breathing dots)
-        const activeGaps = this.lyricsContainer.querySelectorAll(
-          '.lyrics-gap.active',
-        );
-        activeGaps.forEach((gapLine) => {
-          this.updateSyllablesForLine(gapLine as HTMLElement, currentTimeMs);
-        });
-
-        // Update position classes for YouLyPlus blur/opacity effect
-        if (this.activeLineIndices.length > 0) {
-          const primaryLineIndex = this.activeLineIndices[0];
-          const primaryLine = this.lyricsContainer.querySelector(
-            `#lyrics-line-${primaryLineIndex}`,
-          ) as HTMLElement;
-
-          if (primaryLine && primaryLine !== this.currentPrimaryActiveLine) {
-            this.lastPrimaryActiveLine = this.currentPrimaryActiveLine;
-            this.currentPrimaryActiveLine = primaryLine;
-            this.updatePositionClasses(primaryLine);
-          }
-        }
-      }
+      // currentTime changes are now handled by the custom setter (_onTimeChanged)
+      // This block intentionally left empty — only here for backwards compat with
+      // any subclasses that might check changedProperties
     }
 
     if (
       this.autoScroll &&
       !this.isUserScrolling &&
+      !this.isClickSeeking &&
       changedProperties.has('activeLineIndices') &&
       this.activeLineIndices.length > 0
     ) {
       // Use YouLyPlus-style scroll if we have a current primary line
       if (this.currentPrimaryActiveLine) {
+        console.log('[SCROLL-DEBUG] updated() -> scrollToActiveLineYouLy', {
+          activeLines: this.activeLineIndices,
+          scrollTop: this.lyricsContainer?.scrollTop,
+        });
         this.scrollToActiveLineYouLy(this.currentPrimaryActiveLine);
       } else {
+        console.log(
+          '[SCROLL-DEBUG] updated() -> scrollToActiveLine (fallback)',
+          { activeLines: this.activeLineIndices },
+        );
         this.scrollToActiveLine();
-      }
-    }
-
-    // Smoothly scroll to the indicator when entering a gap
-    const instrumental = this.findInstrumentalGapAt(this.currentTime);
-    const idx = instrumental ? instrumental.insertBeforeIndex : null;
-    if (this.autoScroll && !this.isUserScrolling) {
-      if (idx !== null && idx !== this.lastInstrumentalIndex) {
-        this.scrollToInstrumental(idx);
-        this.lastInstrumentalIndex = idx;
-      } else if (idx === null && this.lastInstrumentalIndex !== null) {
-        // Gap ended — gently scroll to the line that begins now
-        this.scrollToInstrumental(this.lastInstrumentalIndex);
-        this.lastInstrumentalIndex = null;
       }
     }
   }
@@ -2024,10 +2087,19 @@ export class AmLyrics extends LitElement {
   }
 
   private handleUserScroll() {
-    // Ignore programmatic scrolls (defensive check)
-    if (this.isProgrammaticScroll) {
+    // Ignore programmatic scrolls and click-seek scrolls
+    if (this.isProgrammaticScroll || this.isClickSeeking) {
+      console.log('[SCROLL-DEBUG] handleUserScroll IGNORED', {
+        isProgrammatic: this.isProgrammaticScroll,
+        isClickSeeking: this.isClickSeeking,
+      });
       return;
     }
+
+    console.log(
+      '[SCROLL-DEBUG] handleUserScroll TRIGGERED - setting isUserScrolling=true',
+      { scrollTop: this.lyricsContainer?.scrollTop },
+    );
 
     // Mark that user is currently scrolling
     this.isUserScrolling = true;
@@ -2040,6 +2112,9 @@ export class AmLyrics extends LitElement {
 
     // Set timeout to re-enable auto-scroll after 2 seconds of no scrolling
     this.userScrollTimeoutId = window.setTimeout(() => {
+      console.log(
+        '[SCROLL-DEBUG] handleUserScroll timeout -> scrollToActiveLine (re-enable auto-scroll)',
+      );
       this.isUserScrolling = false;
       this.userScrollTimeoutId = undefined;
 
@@ -2094,6 +2169,42 @@ export class AmLyrics extends LitElement {
     return null;
   }
 
+  /**
+   * Find ALL instrumental gaps in the song, regardless of current time.
+   * Used by the template to always render gap elements in the DOM.
+   */
+  private findAllInstrumentalGaps(): Array<{
+    insertBeforeIndex: number;
+    gapStart: number;
+    gapEnd: number;
+  }> {
+    if (!this.lyrics || this.lyrics.length === 0) return [];
+    const gaps: Array<{
+      insertBeforeIndex: number;
+      gapStart: number;
+      gapEnd: number;
+    }> = [];
+
+    // Start-of-song gap
+    const first = this.lyrics[0];
+    if (first.timestamp >= INSTRUMENTAL_THRESHOLD_MS) {
+      gaps.push({ insertBeforeIndex: 0, gapStart: 0, gapEnd: first.timestamp });
+    }
+
+    // Inter-line gaps
+    for (let i = 0; i < this.lyrics.length - 1; i += 1) {
+      const curr = this.lyrics[i];
+      const next = this.lyrics[i + 1];
+      const gapStart = curr.endtime;
+      const gapEnd = next.timestamp;
+      if (gapEnd - gapStart >= INSTRUMENTAL_THRESHOLD_MS) {
+        gaps.push({ insertBeforeIndex: i + 1, gapStart, gapEnd });
+      }
+    }
+
+    return gaps;
+  }
+
   private startAnimationFromTime(time: number) {
     if (this.animationFrameId) {
       cancelAnimationFrame(this.animationFrameId);
@@ -2103,7 +2214,9 @@ export class AmLyrics extends LitElement {
     if (!this.lyrics) return;
 
     const activeLineIndices = this.findActiveLineIndices(time);
-    this.activeLineIndices = activeLineIndices;
+    if (!AmLyrics.arraysEqual(activeLineIndices, this.activeLineIndices)) {
+      this.activeLineIndices = activeLineIndices;
+    }
 
     // Clear previous state
     this.activeMainWordIndices.clear();
@@ -2160,7 +2273,9 @@ export class AmLyrics extends LitElement {
     if (!this.lyrics) return;
 
     const activeLineIndices = this.findActiveLineIndices(this.currentTime);
-    this.activeLineIndices = activeLineIndices;
+    if (!AmLyrics.arraysEqual(activeLineIndices, this.activeLineIndices)) {
+      this.activeLineIndices = activeLineIndices;
+    }
 
     // Clear previous state
     this.activeMainWordIndices.clear();
@@ -2241,6 +2356,11 @@ export class AmLyrics extends LitElement {
   }
 
   private handleLineClick(line: LyricsLine) {
+    console.log('[SCROLL-DEBUG] handleLineClick', {
+      timestamp: line.timestamp,
+      scrollTop: this.lyricsContainer?.scrollTop,
+    });
+
     // Reset all syllables to prevent highlighting conflicts during seek
     if (this.lyricsContainer) {
       const allLines = this.lyricsContainer.querySelectorAll('.lyrics-line');
@@ -2269,6 +2389,13 @@ export class AmLyrics extends LitElement {
       this.scrollAnimationTimeout = undefined;
     }
 
+    // Also clear user scroll timeout to prevent stale scrollToActiveLine
+    if (this.userScrollTimeoutId) {
+      clearTimeout(this.userScrollTimeoutId);
+      this.userScrollTimeoutId = undefined;
+    }
+    this.isUserScrolling = false;
+
     // Reset active line tracking to prevent scroll fighting
     this.currentPrimaryActiveLine = null;
     this.lastPrimaryActiveLine = null;
@@ -2280,6 +2407,13 @@ export class AmLyrics extends LitElement {
       `.lyrics-line[data-start-time="${line.timestamp * 1000}"]`,
     ) as HTMLElement | null;
 
+    console.log(
+      '[SCROLL-DEBUG] handleLineClick clickedElement found:',
+      !!clickedLineElement,
+      'selector:',
+      `.lyrics-line[data-start-time="${line.timestamp * 1000}"]`,
+    );
+
     if (clickedLineElement && this.lyricsContainer) {
       // Update active line reference to the clicked line
       this.currentPrimaryActiveLine = clickedLineElement;
@@ -2288,7 +2422,18 @@ export class AmLyrics extends LitElement {
       this.currentScrollOffset = -this.lyricsContainer.scrollTop;
 
       // Scroll to it with forceScroll to bypass staggered animation
-      this.scrollToYouLy(clickedLineElement, true);
+      // Set click-seek cooldown to prevent updated() scroll from fighting
+      this.isClickSeeking = true;
+      if (this.clickSeekTimeout) clearTimeout(this.clickSeekTimeout);
+      this.clickSeekTimeout = setTimeout(() => {
+        console.log('[SCROLL-DEBUG] isClickSeeking cooldown expired');
+        this.isClickSeeking = false;
+      }, 800);
+
+      console.log(
+        '[SCROLL-DEBUG] handleLineClick -> scrollToActiveLineYouLy(forceScroll)',
+      );
+      this.scrollToActiveLineYouLy(clickedLineElement, true);
     }
 
     const event = new CustomEvent('line-click', {
@@ -2320,6 +2465,10 @@ export class AmLyrics extends LitElement {
   }
 
   private scrollToActiveLine() {
+    console.log('[SCROLL-DEBUG] scrollToActiveLine called', {
+      activeLineIndices: this.activeLineIndices,
+      scrollTop: this.lyricsContainer?.scrollTop,
+    });
     if (!this.lyricsContainer || this.activeLineIndices.length === 0) {
       return;
     }
@@ -2350,6 +2499,13 @@ export class AmLyrics extends LitElement {
       const top =
         lineTop - containerHeight / 2 + lineHeight / 2 - offsetAdjustment;
 
+      console.log('[SCROLL-DEBUG] scrollToActiveLine -> scrollTo', {
+        top,
+        lineTop,
+        containerHeight,
+        lineHeight,
+      });
+
       // Use requestAnimationFrame for smoother iOS performance
       requestAnimationFrame(() => {
         this.isProgrammaticScroll = true;
@@ -2363,8 +2519,9 @@ export class AmLyrics extends LitElement {
   }
 
   private scrollToInstrumental(insertBeforeIndex: number) {
+    console.log('[SCROLL-DEBUG] scrollToInstrumental', { insertBeforeIndex });
     if (!this.lyricsContainer) return;
-    
+
     // Find the gap element by ID instead of nth-child
     const gapTarget = this.lyricsContainer.querySelector(
       `#gap-${insertBeforeIndex}`,
@@ -2375,10 +2532,16 @@ export class AmLyrics extends LitElement {
       // This matches YouLyPlus behavior where gaps don't scroll to a different position
       const paddingTop = this.getScrollPaddingTop();
       const targetTranslateY = paddingTop - gapTarget.offsetTop;
-      
+
+      console.log('[SCROLL-DEBUG] scrollToInstrumental -> animateScrollYouLy', {
+        targetTranslateY,
+        paddingTop,
+        gapOffsetTop: gapTarget.offsetTop,
+      });
+
       this.isProgrammaticScroll = true;
       this.animateScrollYouLy(targetTranslateY, false);
-      
+
       setTimeout(() => {
         this.isProgrammaticScroll = false;
       }, 250);
@@ -2408,6 +2571,12 @@ export class AmLyrics extends LitElement {
    * (Exact copy from YouLyPlus _animateScroll)
    */
   private animateScrollYouLy(newTranslateY: number, forceScroll = false): void {
+    console.log('[SCROLL-DEBUG] animateScrollYouLy', {
+      newTranslateY,
+      forceScroll,
+      scrollTop: this.lyricsContainer?.scrollTop,
+      isAnimating: this.scrollAnimationState?.isAnimating,
+    });
     if (!this.lyricsContainer) return;
     const parent = this.lyricsContainer;
 
@@ -2462,6 +2631,17 @@ export class AmLyrics extends LitElement {
     const prevOffset = -parent.scrollTop;
     const delta = prevOffset - newTranslateY;
     this.currentScrollOffset = newTranslateY;
+
+    // Skip animation if already at the target position (e.g., first lines at top)
+    if (Math.abs(parent.scrollTop - targetTop) < 1 && Math.abs(delta) < 1) {
+      console.log(
+        '[SCROLL-DEBUG] animateScrollYouLy SKIPPED - already at target',
+        { scrollTop: parent.scrollTop, targetTop, delta },
+      );
+      state.isAnimating = false;
+      state.pendingUpdate = null;
+      return;
+    }
 
     if (forceScroll) {
       parent.scrollTo({ top: targetTop, behavior: 'smooth' });
@@ -2624,7 +2804,7 @@ export class AmLyrics extends LitElement {
 
     setTimeout(() => {
       this.isProgrammaticScroll = false;
-    }, 250);
+    }, 600);
 
     this.animateScrollYouLy(targetTranslateY, forceScroll);
   }
@@ -2772,48 +2952,13 @@ export class AmLyrics extends LitElement {
       syllable.style.animation = syllableAnimation;
     }
 
-    // Apply all collected animations at once (like YouLyPlus)
+    // --- WRITE PHASE ---
     classList.remove('pre-highlight');
     classList.add('highlight');
 
-    // Explicitly handle double-wipe prevention via class
-    if (charSpans.length > 0) {
-      classList.add('char-animating');
-      // Explicitly clear any syllable animation to prevent double wipe
-      syllable.style.animation = '';
-      syllable.style.backgroundImage = 'none';
-    } else {
-      classList.remove('char-animating');
-    }
-
-    // Apply char animations from map AND ensure styles are set
+    // Apply char animations from map
     for (const [span, animationString] of charAnimationsMap.entries()) {
-      span.style.transition = 'none'; // Prevent transition conflicts
       span.style.animation = animationString;
-      span.classList.add('highlight');
-
-      // Also make sure we re-apply the style properties if they were missed in the loop above
-      // (This acts as a failsafe if the grow block didn't run for this specific char but we are wiping it)
-      if (
-        !styleUpdates.some(
-          u => u.element === span && u.property === '--max-scale',
-        )
-      ) {
-        const maxScale = span.dataset.maxScale;
-        if (maxScale) span.style.setProperty('--max-scale', maxScale);
-
-        const shadowIntensity = span.dataset.shadowIntensity;
-        if (shadowIntensity)
-          span.style.setProperty('--shadow-intensity', shadowIntensity);
-
-        const translateYPeak = span.dataset.translateYPeak;
-        if (translateYPeak)
-          span.style.setProperty('--translate-y-peak', `${translateYPeak}`); // Fixed: removed %
-
-        const horizontalOffset = span.dataset.horizontalOffset;
-        if (horizontalOffset)
-          span.style.setProperty('--char-offset-x', `${horizontalOffset}`); // Fixed: removed px
-      }
     }
 
     // Apply style updates
@@ -2857,6 +3002,8 @@ export class AmLyrics extends LitElement {
    */
   private resetSyllables(line: HTMLElement, noFade = false): void {
     if (!line) return;
+    // Invalidate DOM cache since we're resetting this line
+    (line as any)._cachedSyllableElements = null;
     Array.from(line.getElementsByClassName('lyrics-syllable')).forEach(
       syllable => this.resetSyllable(syllable as HTMLElement, noFade),
     );
@@ -2864,21 +3011,29 @@ export class AmLyrics extends LitElement {
 
   /**
    * Update syllables based on current time
+   * Uses DOM caching and pre-highlight reset for smooth transitions
    */
   private updateSyllablesForLine(
     line: HTMLElement,
     currentTimeMs: number,
   ): void {
-    const syllables = line.querySelectorAll('.lyrics-syllable');
+    // DOM cache: avoid querySelectorAll on every frame
+    let syllables: HTMLElement[] = (line as any)._cachedSyllableElements;
+    if (!syllables) {
+      syllables = Array.from(
+        line.querySelectorAll('.lyrics-syllable'),
+      ) as HTMLElement[];
+      (line as any)._cachedSyllableElements = syllables;
+    }
 
-    syllables.forEach(syllableEl => {
-      const syllable = syllableEl as HTMLElement;
+    for (let i = 0; i < syllables.length; i++) {
+      const syllable = syllables[i];
       const startTime = parseFloat(
         syllable.getAttribute('data-start-time') || '0',
       );
       const endTime = parseFloat(syllable.getAttribute('data-end-time') || '0');
 
-      if (!startTime) return;
+      if (!startTime) continue;
 
       const classList = syllable.classList;
       const hasHighlight = classList.contains('highlight');
@@ -2887,7 +3042,20 @@ export class AmLyrics extends LitElement {
       const hasActiveState = hasHighlight || hasFinished || hasPreHighlight;
 
       // Early exit if syllable is far in the future
-      if (currentTimeMs < startTime - 1000 && !hasActiveState) return;
+      if (currentTimeMs < startTime - 1000 && !hasActiveState) continue;
+
+      // Pre-highlight reset: if this syllable has pre-highlight but the previous
+      // syllable doesn't have highlight, reset the pre-highlight (seek scenario)
+      if (hasPreHighlight && i > 0) {
+        const prevSyllable = syllables[i - 1];
+        if (!prevSyllable.classList.contains('highlight')) {
+          classList.remove('pre-highlight');
+          syllable.style.removeProperty('--pre-wipe-duration');
+          syllable.style.removeProperty('--pre-wipe-delay');
+          syllable.style.animation = '';
+          continue;
+        }
+      }
 
       if (currentTimeMs >= startTime && currentTimeMs <= endTime) {
         // Currently active
@@ -2911,7 +3079,7 @@ export class AmLyrics extends LitElement {
           this.resetSyllable(syllable);
         }
       }
-    });
+    }
   }
 
   private animateProgress() {
@@ -3215,7 +3383,11 @@ export class AmLyrics extends LitElement {
         return html`<div class="no-lyrics">No lyrics found.</div>`;
       }
 
-      const instrumental = this.findInstrumentalGapAt(this.currentTime);
+      // Build a lookup map of ALL gaps so they are always in the DOM
+      const allGaps = this.findAllInstrumentalGaps();
+      const gapByIndex = new Map(
+        allGaps.map(g => [g.insertBeforeIndex, g] as const),
+      );
 
       return this.lyrics.map((line, lineIndex) => {
         const isLineActive = this.activeLineIndices.includes(lineIndex);
@@ -3405,64 +3577,49 @@ export class AmLyrics extends LitElement {
 
         // Check for instrumental gap before this line
         let maybeInstrumentalBlock: unknown = null;
-        if (instrumental && instrumental.insertBeforeIndex === lineIndex) {
-          const isGapActive =
-            this.currentTime >= instrumental.gapStart &&
-            this.currentTime < instrumental.gapEnd;
-
+        const gapForLine = gapByIndex.get(lineIndex);
+        if (gapForLine) {
           // Calculate dot timing for fill-up animation (3 dots)
-          const gapDuration = instrumental.gapEnd - instrumental.gapStart;
-          const dotCount = 3;
-          const dotDuration = gapDuration / dotCount;
+          const dotDuration = (gapForLine.gapEnd - gapForLine.gapStart) / 3;
 
-          // Determine which dots should be highlighted based on current time
-          const elapsedInGap = Math.max(
-            0,
-            this.currentTime - instrumental.gapStart,
-          );
-          const dotProgress = elapsedInGap / dotDuration;
-
-          const getDotClass = (dotIndex: number) => {
-            if (!isGapActive) return '';
-            if (dotIndex < Math.floor(dotProgress)) return 'finished';
-            if (dotIndex === Math.floor(dotProgress) && dotProgress % 1 > 0)
-              return 'highlight';
-            return '';
-          };
-
-          // Create animated dots for instrumental gap
-          // gapStart, gapEnd, and dotDuration are already in milliseconds (same as currentTime)
+          // Gap starts without 'active' — _onTimeChanged toggles it imperatively
           maybeInstrumentalBlock = html`<div
             id="gap-${lineIndex}"
-            class="lyrics-line lyrics-gap ${isGapActive ? 'active' : ''}"
-            data-start-time="${instrumental.gapStart}"
-            data-end-time="${instrumental.gapEnd}"
+            class="lyrics-line lyrics-gap"
+            data-start-time="${gapForLine.gapStart}"
+            data-end-time="${gapForLine.gapEnd}"
           >
             <div class="lyrics-line-container">
               <p class="main-vocal-container">
                 <span class="lyrics-word">
                   <span class="lyrics-syllable-wrap">
                     <span
-                      class="lyrics-syllable ${getDotClass(0)}"
-                      data-start-time="${instrumental.gapStart}"
-                      data-end-time="${instrumental.gapStart + dotDuration}"
+                      class="lyrics-syllable"
+                      data-start-time="${gapForLine.gapStart}"
+                      data-end-time="${gapForLine.gapStart + dotDuration}"
                       data-duration="${dotDuration}"
+                      data-wipe-ratio="1"
+                      data-syllable-index="0"
                     ></span>
                   </span>
                   <span class="lyrics-syllable-wrap">
                     <span
-                      class="lyrics-syllable ${getDotClass(1)}"
-                      data-start-time="${instrumental.gapStart + dotDuration}"
-                      data-end-time="${instrumental.gapStart + dotDuration * 2}"
+                      class="lyrics-syllable"
+                      data-start-time="${gapForLine.gapStart + dotDuration}"
+                      data-end-time="${gapForLine.gapStart + dotDuration * 2}"
                       data-duration="${dotDuration}"
+                      data-wipe-ratio="1"
+                      data-syllable-index="1"
                     ></span>
                   </span>
                   <span class="lyrics-syllable-wrap">
                     <span
-                      class="lyrics-syllable ${getDotClass(2)}"
-                      data-start-time="${instrumental.gapStart + dotDuration * 2}"
-                      data-end-time="${instrumental.gapEnd}"
+                      class="lyrics-syllable"
+                      data-start-time="${gapForLine.gapStart + dotDuration * 2}"
+                      data-end-time="${gapForLine.gapEnd}"
                       data-duration="${dotDuration}"
+                      data-wipe-ratio="1"
+                      data-syllable-index="2"
                     ></span>
                   </span>
                 </span>
