@@ -1,209 +1,177 @@
 <!doctype html>
 <html lang="en-GB">
-  <head>
-    <meta charset="utf-8" />
-    <meta
-      name="viewport"
-      content="width=device-width, initial-scale=1.0, viewport-fit=cover"
-    />
 
-    <!-- Bring your own fonts -->
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&display=swap"
-      rel="stylesheet"
-    />
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
 
-    <style>
-      body {
-        background: #fafafa; /* Any background works out of the box */
+  <!-- Bring your own fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&display=swap"
+    rel="stylesheet" />
+
+  <style>
+    body {
+      background: #333;
+      /* Any background works out of the box */
+    }
+  </style>
+</head>
+
+<body>
+  <div>
+    <input id="title-input" type="text" placeholder="Song title" />
+    <input id="artist-input" type="text" placeholder="Artist" />
+    <input id="query-input" type="text" placeholder="Search query (e.g. Title - Artist)" />
+    <input id="duration-input" type="number" placeholder="Duration (ms)" />
+    <button id="load-button">Load lyrics</button>
+  </div>
+
+  <am-lyrics song-title="Paradise" song-artist="Coldplay" song-album="" song-duration="" query="" music-id="" isrc=""
+    highlight-color="#f00" hover-background-color="#e0e0e0" font-family="'Inter', Arial, sans-serif" autoscroll
+    interpolate="false"></am-lyrics>
+  <!--
+  <am-lyrics ... (commented out) -->
+
+  <button id="start-button">Start</button>
+  <button id="reset-button">Reset</button>
+
+  <script type="module">
+    import '../dist/src/am-lyrics.js';
+
+    let animationFrameId;
+    let songStartTime = 0;
+    let systemStartTime = 0;
+
+    function stopAnimation() {
+      if (animationFrameId) {
+        cancelAnimationFrame(animationFrameId);
+        animationFrameId = null;
       }
-    </style>
-  </head>
-  <body>
-    <div>
-      <input id="title-input" type="text" placeholder="Song title" />
-      <input id="artist-input" type="text" placeholder="Artist" />
-      <input
-        id="query-input"
-        type="text"
-        placeholder="Search query (e.g. Title - Artist)"
-      />
-      <input id="duration-input" type="number" placeholder="Duration (ms)" />
-      <button id="load-button">Load lyrics</button>
-    </div>
+    }
 
-    <am-lyrics
-      song-title="小苹果"
-      song-artist="筷子兄弟"
-      song-album=""
-      song-duration="213000"
-      query=""
-      music-id=""
-      isrc=""
-      highlight-color="#f00"
-      hover-background-color="#e0e0e0"
-      font-family="'Inter', Arial, sans-serif"
-      autoscroll
-      interpolate="false"
-    ></am-lyrics>
-    <!--
-  <am-lyrics
-    song-title="Uptown Funk"          // Preferred: provide title for LyricsPlus API
-    song-artist="Mark Ronson"         // Preferred: provide artist for LyricsPlus API
-    song-album="Uptown Special"       // Optional album metadata sent to LyricsPlus
-    song-duration="269000"            // Optional song duration (ms) sent to LyricsPlus
-    query="Uptown Funk Mark Ronson"   // Fallback search string for Apple Music backup API
-    music-id=""                       // Use this if you have a specific song ID from Apple Music (almost never)
-    isrc=""                           // To be used WITH a query, just to double check if it is correct
-    duration=""                       // Playback timer duration (component sync). See JS below
-    highlight-color="#000"            // Color of the highlighted words
-    hover-background-color="#f0f0f0"  // Color of the line when you hover over it
-    hide-source-footer="false"        // Controls whether the footer at the bottom is a larger one or a more compact GitHub link.
-    font-family="'Inter', sans-serif" // BYOF
-    autoscroll                        // Self-explanatory
-    interpolate                       // Whether to animate the progress of the words
-    @line-click=${handleLineClick}    // Event listener for line clicks to skip to that part of the song.
-  ></am-lyrics>
-  -->
+    function animate() {
+      const amLyrics = document.querySelector('am-lyrics');
+      if (!amLyrics) return;
 
-    <button id="start-button">Start</button>
-    <button id="reset-button">Reset</button>
+      const elapsedTime = Date.now() - systemStartTime;
+      amLyrics.currentTime = songStartTime + elapsedTime; // Convert to milliseconds
 
-    <script type="module">
-      import '../dist/src/am-lyrics.js';
+      animationFrameId = requestAnimationFrame(animate);
+    }
 
-      let animationFrameId;
-      let songStartTime = 0;
-      let systemStartTime = 0;
+    function startPlayback() {
+      stopAnimation();
+      songStartTime = 0;
+      systemStartTime = Date.now();
+      animate();
+    }
 
-      function stopAnimation() {
-        if (animationFrameId) {
-          cancelAnimationFrame(animationFrameId);
-          animationFrameId = null;
-        }
-      }
+    function handleLineClick(e) {
+      stopAnimation();
+      songStartTime = e.detail.timestamp;
+      systemStartTime = Date.now();
+      animate();
+    }
 
-      function animate() {
-        const amLyrics = document.querySelector('am-lyrics');
-        if (!amLyrics) return;
+    function handleLoadMetadata() {
+      const titleInput = document.querySelector('#title-input');
+      const artistInput = document.querySelector('#artist-input');
+      const durationInput = document.querySelector('#duration-input');
+      const queryInput = document.querySelector('#query-input');
+      const amLyrics = document.querySelector('am-lyrics');
 
-        const elapsedTime = Date.now() - systemStartTime;
-        amLyrics.currentTime = songStartTime + elapsedTime; // Convert to milliseconds
+      if (!amLyrics) return;
 
-        animationFrameId = requestAnimationFrame(animate);
-      }
+      const title = titleInput?.value.trim() ?? '';
+      const artist = artistInput?.value.trim() ?? '';
+      const queryText = queryInput?.value.trim() ?? '';
+      const durationText = durationInput?.value.trim() ?? '';
+      const durationMs = durationText ? Number(durationText) : NaN;
 
-      function startPlayback() {
-        stopAnimation();
-        songStartTime = 0;
-        systemStartTime = Date.now();
-        animate();
+      if (titleInput) {
+        amLyrics.songTitle = title;
       }
 
-      function handleLineClick(e) {
-        stopAnimation();
-        songStartTime = e.detail.timestamp;
-        systemStartTime = Date.now();
-        animate();
+      if (artistInput) {
+        amLyrics.songArtist = artist;
       }
 
-      function handleLoadMetadata() {
-        const titleInput = document.querySelector('#title-input');
-        const artistInput = document.querySelector('#artist-input');
-        const durationInput = document.querySelector('#duration-input');
-        const queryInput = document.querySelector('#query-input');
-        const amLyrics = document.querySelector('am-lyrics');
-
-        if (!amLyrics) return;
-
-        const title = titleInput?.value.trim() ?? '';
-        const artist = artistInput?.value.trim() ?? '';
-        const queryText = queryInput?.value.trim() ?? '';
-        const durationText = durationInput?.value.trim() ?? '';
-        const durationMs = durationText ? Number(durationText) : NaN;
-
-        if (titleInput) {
-          amLyrics.songTitle = title;
-        }
-
-        if (artistInput) {
-          amLyrics.songArtist = artist;
-        }
-
-        if (!Number.isNaN(durationMs) && durationMs > 0) {
-          amLyrics.songDurationMs = durationMs;
-        } else if (durationText === '') {
-          amLyrics.songDurationMs = undefined;
-        }
-
-        amLyrics.songAlbum = '';
-
-        const fallbackQuery =
-          queryText || [title, artist].filter(Boolean).join(' ');
-        if (fallbackQuery) {
-          amLyrics.query = fallbackQuery;
-        } else {
-          amLyrics.query = '';
-        }
-
-        amLyrics.isrc = '';
-        amLyrics.musicId = '';
+      if (!Number.isNaN(durationMs) && durationMs > 0) {
+        amLyrics.songDurationMs = durationMs;
+      } else if (durationText === '') {
+        amLyrics.songDurationMs = undefined;
       }
 
-      function resetPlayback() {
-        stopAnimation();
-        const amLyrics = document.querySelector('am-lyrics');
-        if (amLyrics) {
-          // Set duration to -1 to trigger reset
-          amLyrics.duration = -1;
-        }
-        songStartTime = 0;
+      amLyrics.songAlbum = '';
+
+      const fallbackQuery =
+        queryText || [title, artist].filter(Boolean).join(' ');
+      if (fallbackQuery) {
+        amLyrics.query = fallbackQuery;
+      } else {
+        amLyrics.query = '';
       }
 
-      document.addEventListener('DOMContentLoaded', () => {
-        const amLyrics = document.querySelector('am-lyrics');
-        const loadButton = document.querySelector('#load-button');
-        const startButton = document.querySelector('#start-button');
-        const resetButton = document.querySelector('#reset-button');
-        const titleInput = document.querySelector('#title-input');
-        const artistInput = document.querySelector('#artist-input');
-        const queryInput = document.querySelector('#query-input');
-        const durationInput = document.querySelector('#duration-input');
+      amLyrics.isrc = '';
+      amLyrics.musicId = '';
+    }
 
-        if (amLyrics) {
-          amLyrics.addEventListener('line-click', handleLineClick);
-        }
+    function resetPlayback() {
+      stopAnimation();
+      const amLyrics = document.querySelector('am-lyrics');
+      if (amLyrics) {
+        // Set duration to -1 to trigger reset
+        amLyrics.duration = -1;
+      }
+      songStartTime = 0;
+    }
 
-        if (titleInput && amLyrics?.songTitle) {
-          titleInput.value = amLyrics.songTitle;
-        }
+    document.addEventListener('DOMContentLoaded', () => {
+      const amLyrics = document.querySelector('am-lyrics');
+      const loadButton = document.querySelector('#load-button');
+      const startButton = document.querySelector('#start-button');
+      const resetButton = document.querySelector('#reset-button');
+      const titleInput = document.querySelector('#title-input');
+      const artistInput = document.querySelector('#artist-input');
+      const queryInput = document.querySelector('#query-input');
+      const durationInput = document.querySelector('#duration-input');
 
-        if (artistInput && amLyrics?.songArtist) {
-          artistInput.value = amLyrics.songArtist;
-        }
+      if (amLyrics) {
+        amLyrics.addEventListener('line-click', handleLineClick);
+      }
 
-        if (queryInput && amLyrics?.query) {
-          queryInput.value = amLyrics.query;
-        }
+      if (titleInput && amLyrics?.songTitle) {
+        titleInput.value = amLyrics.songTitle;
+      }
 
-        if (durationInput && typeof amLyrics?.songDurationMs === 'number') {
-          durationInput.value = String(amLyrics.songDurationMs);
-        }
+      if (artistInput && amLyrics?.songArtist) {
+        artistInput.value = amLyrics.songArtist;
+      }
 
-        if (loadButton) {
-          loadButton.addEventListener('click', handleLoadMetadata);
-        }
+      if (queryInput && amLyrics?.query) {
+        queryInput.value = amLyrics.query;
+      }
 
-        if (startButton) {
-          startButton.addEventListener('click', startPlayback);
-        }
+      if (durationInput && typeof amLyrics?.songDurationMs === 'number') {
+        durationInput.value = String(amLyrics.songDurationMs);
+      }
 
-        if (resetButton) {
-          resetButton.addEventListener('click', resetPlayback);
-        }
-      });
-    </script>
-  </body>
+      if (loadButton) {
+        loadButton.addEventListener('click', handleLoadMetadata);
+      }
+
+      if (startButton) {
+        startButton.addEventListener('click', startPlayback);
+      }
+
+      if (resetButton) {
+        resetButton.addEventListener('click', resetPlayback);
+      }
+    });
+  </script>
+</body>
+
 </html>

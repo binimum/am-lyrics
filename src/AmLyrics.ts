@@ -3,7 +3,7 @@ import { property, state, query } from 'lit/decorators.js';
 import { GoogleService } from './GoogleService.js';
 
 const VERSION = '0.6.5';
-const INSTRUMENTAL_THRESHOLD_MS = 3000; // Show ellipsis for gaps >= 3s
+const INSTRUMENTAL_THRESHOLD_MS = 7000; // Show dots for gaps >= 7s
 
 const KPOE_SERVERS = [
   'https://lyricsplus.prjktla.workers.dev',
@@ -75,166 +75,571 @@ interface ResolvedMetadata {
 
 export class AmLyrics extends LitElement {
   static styles = css`
+    /* ==========================================================================
+       YOULYPLUS-INSPIRED STYLING - Design Tokens & Variables
+       ========================================================================== */
     :host {
+      --lyplus-lyrics-palette: var(--am-lyrics-highlight-color, #ffffff);
+      --lyplus-text-primary: var(--lyplus-lyrics-palette);
+      --lyplus-text-secondary: rgba(255, 255, 255, 0.35);
+
+      --lyplus-padding-base: 1em;
+      --lyplus-padding-line: 10px;
+      --lyplus-padding-gap: 0.4em;
+      --lyplus-border-radius-base: 0.6em;
+      --lyplus-gap-dot-size: 0.4em;
+      --lyplus-gap-dot-margin: 0.1em;
+
+      --lyplus-font-size-base: 25px;
+      --lyplus-font-size-base-grow: 24.5;
+      --lyplus-font-size-subtext: 0.6em;
+
+      --lyplus-blur-amount: 0.07em;
+      --lyplus-blur-amount-near: 0.035em;
+      --lyplus-fade-gap-timing-function: ease-out;
+
+      --lyrics-scroll-padding-top: 25%;
+
       display: block;
       font-family:
         -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu,
         Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
       background: transparent;
       height: 100%;
-      overflow: hidden; /* Ensure the host doesn't show scrollbars */
+      overflow: hidden;
+      font-weight: bold;
+      color: var(--lyplus-text-primary);
     }
 
+    /* ==========================================================================
+       CONTAINER & SCROLL BEHAVIOR
+       ========================================================================== */
     .lyrics-container {
       padding: 20px;
+      padding-top: 80px;
       border-radius: 8px;
       background-color: transparent;
       width: 100%;
       height: 100%;
-      max-height: 100vh; /* Ensure it doesn't exceed viewport height */
+      max-height: 100vh;
       overflow-y: auto;
-      scroll-behavior: smooth;
-      -webkit-overflow-scrolling: touch; /* iOS smooth scrolling */
-      box-sizing: border-box; /* Include padding in height calculation */
+      -webkit-overflow-scrolling: touch;
+      box-sizing: border-box;
+      scrollbar-width: none;
+      transform: translateZ(0);
     }
 
-    .lyrics-line {
-      margin: 10px 0;
-      padding: 10px;
-      border-radius: 5px;
-      transition: all 0.3s ease-in-out;
-      text-align: left; /* Default to left */
-      cursor: pointer;
-      position: relative;
-      font-size: 2em; /* Increased font size */
-      color: #888; /* Default text color to gray */
-      word-wrap: break-word;
-      overflow-wrap: break-word;
-      display: flex;
-      flex-direction: column; /* Allow reordering of main and background text */
-      line-height: 1.2; /* Tighten line height to reduce gaps */
-      gap: 2px; /* Small consistent gap between main and background text */
-      /* Performance optimizations */
-      contain: layout style paint;
-      transform: translate3d(0, 0, 0);
-    }
-
-    .lyrics-line > span {
-      flex-shrink: 0; /* Prevent the main text span from shrinking */
-      margin: 0; /* Remove default margins */
-    }
-
-    .lyrics-line:hover {
-      background-color: var(
-        --am-lyrics-hover-background,
-        var(--hover-background-color, #f0f0f0)
-      );
-    }
-
-    .opposite-turn {
-      text-align: right; /* Opposite is right */
-    }
-
-    .active-line {
-      font-weight: bold;
-      /* No background color needed, just boldness */
-    }
-
-    .progress-text {
-      position: relative;
-      display: inline-block;
-      /* Use background gradient for highlighting instead of pseudo-element */
-      background: linear-gradient(
-        to right,
-        var(--am-lyrics-highlight-color, var(--highlight-color, #000)) 0%,
-        var(--am-lyrics-highlight-color, var(--highlight-color, #000))
-          var(--line-progress, 0%),
-        #888 var(--line-progress, 0%),
-        #888 100%
-      );
-      -webkit-background-clip: text;
-      background-clip: text;
-      -webkit-text-fill-color: transparent;
-      /* Fallback for browsers that don't support background-clip: text */
-      color: #888;
-      /* white-space: pre-wrap; */
-      /* Performance optimizations */
-      transform: translate3d(0, 0, 0);
-      will-change: background-size;
-    }
-
-    .progress-text::before {
-      /* Remove the pseudo-element approach entirely */
+    .lyrics-container::-webkit-scrollbar {
       display: none;
     }
 
-    .active-word {
-      /* No longer needed for highlighting, but keeping for potential future use */
+    /* Disable transitions during touch-scrolling for 1:1 feedback */
+    .lyrics-container.touch-scrolling .lyrics-line,
+    .lyrics-container.touch-scrolling .lyrics-plus-metadata {
+      transition: none !important;
     }
 
-    span {
-      transition:
-        color 0.2s ease-in-out,
-        text-decoration 0.2s ease-in-out;
+    /* Apply smooth gliding transition for mouse-wheel scrolling */
+    .lyrics-container.wheel-scrolling .lyrics-line {
+      transition: transform 0.3s ease-out !important;
     }
 
-    .background-text {
-      display: block;
-      color: rgba(136, 136, 136, 0.8);
-      font-size: 0.8em; /* a bit smaller than main line */
-      font-style: normal; /* no italics */
-      margin: 0; /* Remove margins - use flexbox gap instead */
-      flex-shrink: 0; /* Prevent shrinking */
-      line-height: 1.1; /* Slightly tighter line height for background text */
+    .lyrics-line.scroll-animate {
+      transition: none !important; /* Fixed: prevent conflict with scroll animation */
+      animation-name: lyrics-scroll;
+      animation-duration: var(--scroll-duration, 400ms);
+      animation-timing-function: cubic-bezier(0.23, 1, 0.32, 1);
+      animation-fill-mode: forwards;
     }
 
-    .background-text.before {
-      order: -1; /* Place before main text when background starts earlier */
+    .lyrics-container.user-scrolling .lyrics-line {
+      --lyrics-line-delay: 0ms !important;
+      transition-delay: 0ms !important;
     }
 
-    .background-text.after {
-      order: 1; /* Place after main text when background starts later */
-    }
-    .progress-text:last-child {
-      margin-right: 0 !important; /* Remove margin for the last word */
-    }
-
-    .lyrics-footer {
-      text-align: left;
-      font-size: 0.8em;
-      color: #888;
-      padding: 10px 0;
-      border-top: 1px solid #eee;
-      margin-top: 10px;
-    }
-
-    .lyrics-footer p {
-      margin: 5px 0;
-    }
-
-    .lyrics-footer a {
-      color: #555;
-      text-decoration: none;
-    }
-
-    .lyrics-footer a:hover {
-      text-decoration: underline;
-    }
-
-    .lyrics-header .download-button {
-      background: none;
-      border: none;
+    /* ==========================================================================
+       LYRICS LINE BASE STYLES
+       ========================================================================== */
+    .lyrics-line {
+      padding: var(--lyplus-padding-line);
+      opacity: 0.8;
+      color: var(--lyplus-text-secondary);
+      font-size: var(--lyplus-font-size-base);
       cursor: pointer;
-      color: #888;
-      padding: 0;
-      margin-left: 10px;
-      vertical-align: middle;
-      display: inline-flex;
-      align-items: center;
+      transform-origin: left;
+      transform: translateZ(1px);
+      transition:
+        opacity 0.3s ease,
+        transform 0.4s cubic-bezier(0.41, 0, 0.12, 0.99)
+          var(--lyrics-line-delay, 0ms),
+        filter 0.3s ease;
+      will-change: transform, filter, opacity;
+      content-visibility: auto;
+      text-rendering: optimizeLegibility;
+      overflow-wrap: break-word;
+      mix-blend-mode: lighten;
+      border-radius: var(--lyplus-border-radius-base);
     }
 
-    .lyrics-header .download-button:hover {
-      color: #555;
+    .lyrics-line.scroll-animate {
+      animation-name: lyrics-scroll;
+      animation-duration: 400ms;
+      animation-timing-function: cubic-bezier(0.41, 0, 0.12, 0.99);
+      animation-fill-mode: both;
+      animation-delay: var(--lyrics-line-delay, 0ms);
+    }
+
+    .lyrics-line:not(.scroll-animate) {
+      animation: none;
+    }
+
+    /* --- Line Container & Vocal Containers --- */
+    .lyrics-line-container {
+      overflow-wrap: break-word;
+      transform-origin: left;
+      transform: scale3d(0.93, 0.93, 0.95);
+      transition:
+        transform 0.7s ease,
+        background-color 0.7s,
+        color 0.7s;
+    }
+
+    .lyrics-line.active .lyrics-line-container {
+      transform: scale3d(1.001, 1.001, 1);
+      will-change: transform;
+      transition:
+        transform 0.5s ease,
+        background-color 0.18s,
+        color 0.18s;
+    }
+
+    .main-vocal-container {
+      transform-origin: 5% 50%;
+      margin: 0;
+    }
+
+    .background-vocal-container {
+      max-height: 0;
+      padding-top: 0.2em;
+      overflow: visible;
+      opacity: 0;
+      font-size: var(--lyplus-font-size-subtext);
+      transition:
+        max-height 0.3s,
+        opacity 0.6s,
+        padding 0.6s;
+      margin: 0;
+    }
+
+    .lyrics-line.active .background-vocal-container {
+      max-height: 4em;
+      opacity: 1;
+      transition:
+        max-height 0.6s,
+        opacity 0.6s,
+        padding 0.6s;
+      will-change: max-height, opacity, padding;
+    }
+
+    /* --- Line States & Modifiers --- */
+    .lyrics-line.active {
+      opacity: 1;
+      color: var(--lyplus-text-primary);
+      will-change: transform, opacity;
+    }
+
+    .lyrics-line.singer-right {
+      text-align: end;
+    }
+
+    .lyrics-line.singer-right .lyrics-line-container,
+    .lyrics-line.singer-right .main-vocal-container {
+      transform-origin: right;
+    }
+
+    .lyrics-line.rtl-text {
+      direction: rtl;
+    }
+
+    @media (hover: hover) and (pointer: fine) {
+      .lyrics-line:hover {
+        background: rgba(255, 255, 255, 0.13);
+      }
+    }
+
+    /* --- Blur Effect for Inactive Lines --- */
+    .lyrics-container.blur-inactive-enabled:not(.not-focused)
+      .lyrics-line:not(.active):not(.lyrics-gap) {
+      filter: blur(var(--lyplus-blur-amount));
+    }
+
+    .lyrics-container.blur-inactive-enabled:not(.not-focused)
+      .lyrics-line.post-active-line:not(.lyrics-gap):not(.active),
+    .lyrics-container.blur-inactive-enabled:not(.not-focused)
+      .lyrics-line.next-active-line:not(.lyrics-gap):not(.active),
+    .lyrics-container.blur-inactive-enabled:not(.not-focused)
+      .lyrics-line.lyrics-activest:not(.active):not(.lyrics-gap) {
+      filter: blur(var(--lyplus-blur-amount-near));
+    }
+
+    /* ==========================================================================
+       WORD & SYLLABLE STYLES
+       ========================================================================== */
+    .lyrics-word:not(.allow-break) {
+      display: inline-block;
+      vertical-align: baseline;
+    }
+
+    .lyrics-word.allow-break {
+      display: inline;
+    }
+
+    .lyrics-syllable-wrap {
+      display: inline;
+    }
+
+    .lyrics-syllable-wrap:has(.lyrics-syllable.transliteration) {
+      display: inline-flex;
+      flex-direction: column;
+      align-items: start;
+    }
+
+    .lyrics-syllable {
+      display: inline;
+      color: transparent;
+      background-color: var(--lyplus-text-secondary);
+      white-space: pre-wrap;
+      font-variant-ligatures: none;
+      font-feature-settings: 'liga' 0;
+      background-clip: text;
+      -webkit-background-clip: text;
+      transition:
+        color 0.7s,
+        background-color 0.7s,
+        transform 0.7s ease;
+    }
+
+    /* --- Syllable States --- */
+    .lyrics-syllable.finished {
+      background-color: var(--lyplus-text-primary);
+      transition: transform 1s ease !important;
+    }
+
+    .lyrics-syllable.finished:has(.char) {
+      background-color: transparent;
+    }
+
+    .lyrics-line:not(.active) .lyrics-syllable.finished {
+      transition: color 0.18s;
+    }
+
+    .lyrics-line.active:not(.lyrics-gap) .lyrics-syllable {
+      transform: translateY(0.001%) translateZ(1px);
+      transition:
+        transform 1s ease,
+        background-color 0.5s,
+        color 0.5s;
+      will-change: transform, background;
+    }
+
+    /* --- Wipe Highlight Effect --- */
+    /* IMPORTANT: Only apply to syllables WITHOUT char spans to prevent double wipe */
+    .lyrics-line.active:not(.lyrics-gap) .lyrics-syllable.highlight:not(:has(.char)),
+    .lyrics-line.active:not(.lyrics-gap) .lyrics-syllable.pre-highlight:not(:has(.char)) {
+      background-repeat: no-repeat;
+      background-image:
+        linear-gradient(
+          90deg,
+          transparent 0%,
+          var(--lyplus-text-primary) 50%,
+          transparent 100%
+        ),
+        linear-gradient(
+          90deg,
+          var(--lyplus-text-primary) 100%,
+          transparent 100%
+        );
+      background-size:
+        0.5em 100%,
+        0% 100%;
+      background-position:
+        -0.5em 0%,
+        -0.25em 0%;
+    }
+
+    .lyrics-line.active:not(.lyrics-gap) .lyrics-syllable.highlight.rtl-text:not(:has(.char)),
+    .lyrics-line.active:not(.lyrics-gap)
+      .lyrics-syllable.pre-highlight.rtl-text:not(:has(.char)) {
+      direction: rtl;
+      background-image:
+        linear-gradient(
+          -90deg,
+          var(--lyplus-text-primary) 0%,
+          transparent 100%
+        ),
+        linear-gradient(
+          -90deg,
+          var(--lyplus-text-primary) 100%,
+          transparent 100%
+        );
+      background-position:
+        calc(100% + 0.5em) 0%,
+        right;
+    }
+
+    .lyrics-line.active:not(.lyrics-gap)
+      .lyrics-word:not(.growable)
+      .lyrics-syllable.highlight {
+      transform: translateY(-3.5%) translateZ(1px);
+    }
+
+    .lyrics-line.active:not(.lyrics-gap) .lyrics-syllable.highlight.finished {
+      background-image: none;
+    }
+
+    .lyrics-syllable.pre-highlight {
+      animation-name: pre-wipe-universal;
+      animation-duration: var(--pre-wipe-duration);
+      animation-delay: var(--pre-wipe-delay);
+      animation-timing-function: linear;
+      animation-fill-mode: forwards;
+    }
+
+    .lyrics-syllable.pre-highlight.rtl-text {
+      animation-name: pre-wipe-universal-rtl;
+    }
+
+    .lyrics-syllable.transliteration {
+      font-size: var(--lyplus-font-size-subtext);
+      white-space: pre-wrap;
+      pointer-events: none;
+      user-select: none;
+    }
+
+    /* ==========================================================================
+       CHARACTER-LEVEL ANIMATION (for growable words)
+       ========================================================================== */
+    .lyrics-syllable:has(.char):not(.finished) {
+      background-color: transparent;
+      color: transparent;
+      background-image: none !important; /* Fixed: prevent double wipe */
+    }
+
+    /* Fix double wipe: When active and highlighted, if it has chars, REMOVE the syllable background */
+    .lyrics-line.active:not(.lyrics-gap) .lyrics-syllable.highlight:has(.char),
+    .lyrics-line.active:not(.lyrics-gap)
+      .lyrics-syllable.pre-highlight:has(.char) {
+      background-image: none !important;
+    }
+
+    .lyrics-syllable.char-animating {
+      background: none !important;
+    }
+
+    .lyrics-syllable span.char {
+      display: inline-block;
+      background-color: var(--lyplus-text-secondary);
+      white-space: break-spaces;
+      font-variant-ligatures: none;
+      font-feature-settings: 'liga' 0;
+      background-clip: text;
+      -webkit-background-clip: text;
+      transition:
+        color 0.7s,
+        background-color 0.7s,
+        transform 0.7s ease;
+    }
+
+    .lyrics-line.active .lyrics-syllable span.char {
+      background-image:
+        linear-gradient(
+          90deg,
+          #ffffff00 0%,
+          var(--lyplus-text-primary, #fff) 50%,
+          #0000 100%
+        ),
+        linear-gradient(
+          90deg,
+          var(--lyplus-text-primary, #fff) 100%,
+          #0000 100%
+        );
+      background-clip: text;
+      -webkit-background-clip: text;
+      background-size:
+        0.5em 100%,
+        0% 100%;
+      background-position:
+        -0.5em 0%,
+        -0.25em 0%;
+      background-repeat: no-repeat;
+      transform-origin: 50% 80%;
+      transform: matrix3d(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1);
+      transition:
+        transform 0.7s ease,
+        color 0.18s;
+      will-change: background, transform;
+    }
+
+    .lyrics-syllable.finished .char {
+      transition:
+        color 0.18s,
+        filter 0.4s ease-out;
+      background-color: var(--lyplus-text-primary);
+      filter: drop-shadow(0 0 0 rgba(255, 255, 255, 0));
+    }
+
+    .lyrics-line.active .lyrics-syllable span.char {
+      background-image:
+        linear-gradient(
+          90deg,
+          #ffffff00 0%,
+          var(--lyplus-text-primary, #fff) 50%,
+          #0000 100%
+        ),
+        linear-gradient(
+          90deg,
+          var(--lyplus-text-primary, #fff) 100%,
+          #0000 100%
+        );
+      background-clip: text;
+      -webkit-background-clip: text;
+      background-size:
+        0.5em 100%,
+        0% 100%;
+      background-position:
+        -0.5em 0%,
+        -0.25em 0%;
+      background-repeat: no-repeat;
+      transform-origin: 50% 80%;
+      transform: matrix3d(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1);
+      transition:
+        transform 0.7s ease,
+        color 0.18s,
+        filter 0.5s ease;
+      filter: drop-shadow(0 0 0 rgba(255, 255, 255, 0));
+      will-change: background, transform, filter;
+    }
+
+    .lyrics-line.active .lyrics-syllable span.char.highlight {
+      background-image:
+        linear-gradient(
+          -90deg,
+          var(--lyplus-text-primary, #fff) 0%,
+          #0000 100%
+        ),
+        linear-gradient(
+          -90deg,
+          var(--lyplus-text-primary, #fff) 100%,
+          #0000 100%
+        );
+      background-position:
+        calc(100% + 0.5em) 0%,
+        calc(100% + 0.25em) 0%;
+    }
+
+    .lyrics-word.growable .lyrics-syllable.cleanup .char {
+      transform: translateY(-3.5%) translateZ(1px);
+    }
+
+    /* Glow effect for long words is handled by grow-dynamic animation with filter: drop-shadow */
+    /* Do NOT use CSS text-shadow here as it causes abrupt on/off instead of fade in/out */
+
+    .lyrics-line.active:not(.lyrics-gap)
+      .lyrics-word:not(.growable)
+      .lyrics-syllable.highlight {
+      transform: translateY(-3.5%) translateZ(1px);
+    }
+
+    /* ==========================================================================
+       INSTRUMENTAL GAP STYLES
+       ========================================================================== */
+    .lyrics-gap {
+      height: 0;
+      padding: 0 var(--lyplus-padding-gap);
+      overflow: hidden;
+      opacity: 0;
+      box-sizing: content-box;
+      background-clip: unset;
+      transition:
+        padding 0.3s 0.5s,
+        height 0.3s 0.5s,
+        opacity 0.2s 0.5s,
+        transform 0.3s var(--lyrics-line-delay, 0ms);
+    }
+
+    .lyrics-gap.active {
+      height: 1em;
+      padding: var(--lyplus-padding-gap);
+      opacity: 1;
+      transition:
+        padding 0.3s,
+        height 0.3s,
+        opacity 0.2s 0.3s,
+        transform 0.3s;
+      will-change: height, opacity, padding;
+    }
+
+    .lyrics-gap .main-vocal-container {
+      transform: translateY(-25%) scale(1) translateZ(0);
+    }
+
+    .lyrics-gap:not(.active) .main-vocal-container {
+      animation: gap-ended 0.8s ease;
+      transform: translateY(-25%) scale(0) translateZ(0);
+    }
+
+    .lyrics-gap:not(.active) .main-vocal-container .lyrics-word {
+      animation-play-state: paused;
+    }
+
+    .lyrics-gap.active .main-vocal-container .lyrics-word {
+      animation: gap-loop 4s ease infinite alternate;
+      will-change: transform;
+    }
+
+    .lyrics-gap .lyrics-syllable {
+      display: inline-block;
+      width: var(--lyplus-gap-dot-size);
+      height: var(--lyplus-gap-dot-size);
+      margin: 0 var(--lyplus-gap-dot-margin);
+      overflow: hidden;
+      border-radius: 1em;
+      background-color: var(--lyplus-text-secondary);
+      background-clip: unset;
+    }
+
+    .lyrics-gap.active .lyrics-syllable.highlight,
+    .lyrics-gap.active .lyrics-syllable.finished,
+    .lyrics-gap:not(.active).post-active-line .lyrics-syllable,
+    .lyrics-gap:not(.active).lyrics-activest .lyrics-syllable {
+      background-color: var(--lyplus-text-primary);
+      opacity: 1;
+    }
+
+    .lyrics-gap.active .lyrics-syllable.finished {
+      animation: none !important;
+    }
+
+    /* ==========================================================================
+       METADATA & FOOTER STYLES
+       ========================================================================== */
+    .lyrics-plus-metadata {
+      display: block;
+      position: relative;
+      box-sizing: border-box;
+      font-weight: normal;
+      transform: translateY(var(--lyrics-scroll-offset, 0px)) translateZ(1px);
+      transition:
+        opacity 0.3s ease,
+        transform 0.6s cubic-bezier(0.23, 1, 0.32, 1)
+          var(--lyrics-line-delay, 0ms),
+        filter 0.3s ease;
+    }
+
+    .lyrics-plus-empty {
+      display: block;
+      height: 100vh;
+      transform: translateY(var(--lyrics-scroll-offset, 0px)) translateZ(1px);
     }
 
     .lyrics-footer {
@@ -242,6 +647,26 @@ export class AmLyrics extends LitElement {
       justify-content: space-between;
       align-items: center;
       flex-wrap: wrap;
+      text-align: left;
+      font-size: 0.8em;
+      color: rgba(255, 255, 255, 0.5);
+      padding: 10px 0;
+      border-top: 1px solid rgba(255, 255, 255, 0.1);
+      margin-top: 10px;
+      font-weight: normal;
+    }
+
+    .lyrics-footer p {
+      margin: 5px 0;
+    }
+
+    .lyrics-footer a {
+      color: rgba(255, 255, 255, 0.7);
+      text-decoration: none;
+    }
+
+    .lyrics-footer a:hover {
+      text-decoration: underline;
     }
 
     .footer-content {
@@ -256,87 +681,9 @@ export class AmLyrics extends LitElement {
       align-items: center;
     }
 
-    /* Instrumental indicator */
-    .instrumental-line {
-      display: inline-flex;
-      align-items: baseline;
-      gap: 8px;
-      color: #aaa;
-      font-size: 0.9em;
-      padding: 4px 10px;
-      animation: instrumentalIn 220ms ease;
-    }
-    @keyframes instrumentalIn {
-      from {
-        opacity: 0;
-        transform: translateY(-6px);
-      }
-      to {
-        opacity: 1;
-        transform: translateY(0);
-      }
-    }
-    .instrumental-duration {
-      color: #aaa;
-      font-size: 0.8em;
-    }
-
-    .singer-right {
-      text-align: right;
-      justify-content: flex-end;
-    }
-
-    .singer-left {
-      text-align: left;
-      justify-content: flex-start;
-    }
-
-    /* Skeleton Loading */
-    @keyframes skeleton-loading {
-      0% {
-        background-color: hsl(200, 20%, 80%);
-      }
-      100% {
-        background-color: hsl(200, 20%, 95%);
-      }
-    }
-
-    .skeleton-line {
-      height: 2.5em; /* Taller to match lyrics */
-      margin: 20px 0; /* More spacing */
-      border-radius: 8px;
-      animation: skeleton-loading 1s linear infinite alternate;
-      opacity: 0.7;
-      width: 60%; /* Default width */
-    }
-
-    /* Varying widths for more natural look */
-    .skeleton-line:nth-child(even) {
-      width: 80%;
-    }
-    .skeleton-line:nth-child(3n) {
-      width: 50%;
-    }
-    .skeleton-line:nth-child(5n) {
-      width: 70%;
-    }
-
-    .format-select {
-      background: transparent;
-      border: 1px solid #ccc;
-      border-radius: 4px;
-      color: #888;
-      font-size: 0.8em;
-      margin-left: 10px;
-      padding: 2px 5px;
-      cursor: pointer;
-    }
-
-    .format-select:hover {
-      color: #555;
-      border-color: #aaa;
-    }
-
+    /* ==========================================================================
+       HEADER & CONTROLS
+       ========================================================================== */
     .lyrics-header {
       display: flex;
       padding: 10px 0;
@@ -344,6 +691,22 @@ export class AmLyrics extends LitElement {
       gap: 10px;
       justify-content: space-between;
       align-items: center;
+    }
+
+    .lyrics-header .download-button {
+      background: none;
+      border: none;
+      cursor: pointer;
+      color: rgba(255, 255, 255, 0.6);
+      padding: 0;
+      margin-left: 10px;
+      vertical-align: middle;
+      display: inline-flex;
+      align-items: center;
+    }
+
+    .lyrics-header .download-button:hover {
+      color: rgba(255, 255, 255, 0.9);
     }
 
     .header-controls {
@@ -359,46 +722,461 @@ export class AmLyrics extends LitElement {
 
     .control-button {
       background: transparent;
-      border: 1px solid #ccc;
+      border: 1px solid rgba(255, 255, 255, 0.3);
       border-radius: 4px;
       padding: 2px 8px;
       font-size: 0.8em;
-      color: #888;
+      color: rgba(255, 255, 255, 0.6);
       cursor: pointer;
       transition: all 0.2s;
+      font-weight: normal;
     }
 
     .control-button:hover {
-      color: #555;
-      border-color: #aaa;
+      color: rgba(255, 255, 255, 0.9);
+      border-color: rgba(255, 255, 255, 0.5);
     }
 
     .control-button.active {
-      background-color: var(--am-lyrics-highlight-color, #000);
-      border-color: var(--am-lyrics-highlight-color, #000);
+      background-color: var(--lyplus-text-primary);
+      border-color: var(--lyplus-text-primary);
+      color: #000;
+    }
+
+    .format-select {
+      background: transparent;
+      border: 1px solid rgba(255, 255, 255, 0.3);
+      border-radius: 4px;
+      color: rgba(255, 255, 255, 0.6);
+      font-size: 0.8em;
+      margin-left: 10px;
+      padding: 2px 5px;
+      cursor: pointer;
+      font-weight: normal;
+    }
+
+    .format-select:hover {
+      color: rgba(255, 255, 255, 0.9);
+      border-color: rgba(255, 255, 255, 0.5);
+    }
+
+    .format-select option {
+      background: #1a1a1a;
       color: #fff;
     }
 
+    /* ==========================================================================
+       TRANSLATION & ROMANIZATION
+       ========================================================================== */
+    .lyrics-translation-container,
+    .lyrics-romanization-container {
+      padding-top: 0.2em;
+      opacity: 0.8;
+      font-size: var(--lyplus-font-size-subtext);
+      overflow-wrap: break-word;
+      pointer-events: none;
+      user-select: none;
+      transition:
+        opacity 0.3s ease,
+        color 0.3s;
+      font-weight: normal;
+    }
+
+    .lyrics-romanization-container {
+      direction: ltr !important;
+    }
+
+    .lyrics-romanization-container.rtl-text {
+      direction: rtl !important;
+    }
+
+    .lyrics-romanization-container .lyrics-syllable {
+      white-space: pre-wrap;
+    }
+
+    .lyrics-translation-container {
+      opacity: 0.5;
+    }
+
     .main-line-wrapper.small {
-      font-size: 0.5em; /* 50% size when translation is active */
+      font-size: 0.5em;
       opacity: 0.8;
       display: block;
-      margin-bottom: 0px; /* Reduced from 4px */
+      margin-bottom: 0px;
     }
 
     .translation-line {
-      font-size: 1em; /* Normal size (relative to container font-size) */
-      font-weight: bold; /* Bold like active line usually is */
+      font-size: 1em;
+      font-weight: bold;
       display: block;
-      margin-top: 0px; /* Reduced from 4px */
+      margin-top: 0px;
       line-height: 1.1;
     }
 
     .romanized-line {
       font-size: 0.5em;
-      color: #aaa;
+      color: rgba(255, 255, 255, 0.5);
       display: block;
       margin-top: 2px;
+      font-weight: normal;
+    }
+
+    /* ==========================================================================
+       SKELETON LOADING
+       ========================================================================== */
+    @keyframes skeleton-loading {
+      0% {
+        background-color: rgba(255, 255, 255, 0.1);
+      }
+      100% {
+        background-color: rgba(255, 255, 255, 0.2);
+      }
+    }
+
+    .skeleton-line {
+      height: 2.5em;
+      margin: 20px 0;
+      border-radius: 8px;
+      animation: skeleton-loading 1s linear infinite alternate;
+      opacity: 0.7;
+      width: 60%;
+    }
+
+    .skeleton-line:nth-child(even) {
+      width: 80%;
+    }
+    .skeleton-line:nth-child(3n) {
+      width: 50%;
+    }
+    .skeleton-line:nth-child(5n) {
+      width: 70%;
+    }
+
+    .no-lyrics {
+      color: rgba(255, 255, 255, 0.5);
+      font-size: 1.2em;
+      text-align: center;
+      padding: 2em;
+      font-weight: normal;
+    }
+
+    /* ==========================================================================
+       KEYFRAME ANIMATIONS
+       ========================================================================== */
+
+    /* Wipe animation for syllables */
+    @keyframes wipe {
+      from {
+        background-size:
+          0.75em 100%,
+          0% 100%;
+        background-position:
+          -0.375em 0%,
+          left;
+      }
+      to {
+        background-size:
+          0.75em 100%,
+          100% 100%;
+        background-position:
+          calc(100% + 0.375em) 0%,
+          left;
+      }
+    }
+
+    @keyframes start-wipe {
+      0% {
+        background-size:
+          0.75em 100%,
+          0% 100%;
+        background-position:
+          -0.75em 0%,
+          -0.375em 0%;
+      }
+      100% {
+        background-size:
+          0.75em 100%,
+          100% 100%;
+        background-position:
+          calc(100% + 0.375em) 0%,
+          left;
+      }
+    }
+
+    @keyframes wipe-rtl {
+      from {
+        background-size:
+          0.75em 100%,
+          0% 100%;
+        background-position:
+          calc(100% + 0.375em) 0%,
+          calc(100% + 0.36em);
+      }
+      to {
+        background-size:
+          0.75em 100%,
+          100% 100%;
+        background-position:
+          -0.75em 0%,
+          right;
+      }
+    }
+
+    @keyframes start-wipe-rtl {
+      0% {
+        background-size:
+          0.75em 100%,
+          0% 100%;
+        background-position:
+          calc(100% + 0.75em) 0%,
+          calc(100% + 0.5em);
+      }
+      100% {
+        background-size:
+          0.75em 100%,
+          100% 100%;
+        background-position:
+          -0.75em 0%,
+          right;
+      }
+    }
+
+    @keyframes pre-wipe-universal {
+      from {
+        background-size:
+          0.75em 100%,
+          0% 100%;
+        background-position:
+          -0.75em 0%,
+          left;
+      }
+      to {
+        background-size:
+          0.75em 100%,
+          0% 100%;
+        background-position:
+          -0.375em 0%,
+          left;
+      }
+    }
+
+    @keyframes pre-wipe-universal-rtl {
+      from {
+        background-size:
+          0.75em 100%,
+          0% 100%;
+        background-position:
+          calc(100% + 0.75em) 0%,
+          right;
+      }
+      to {
+        background-size:
+          0.75em 100%,
+          0% 100%;
+        background-position:
+          calc(100% + 0.375em) 0%,
+          right;
+      }
+    }
+
+    @keyframes pre-wipe-char {
+      from {
+        background-size:
+          0.75em 100%,
+          0% 100%;
+        background-position:
+          -0.75em 0%,
+          left;
+      }
+      to {
+        background-size:
+          0.75em 100%,
+          0% 100%;
+        background-position:
+          -0.375em 0%,
+          left;
+      }
+    }
+
+    /* Gap dot animations */
+    @keyframes gap-loop {
+      from {
+        transform: scale(1.1);
+      }
+      to {
+        transform: scale(0.9);
+      }
+    }
+
+    @keyframes gap-ended {
+      0% {
+        transform: translateY(-25%) scale(1) translateZ(0);
+      }
+      35% {
+        transform: translateY(-25%) scale(1.2) translateZ(0);
+      }
+      100% {
+        transform: translateY(-25%) scale(0) translateZ(0);
+      }
+    }
+
+    @keyframes fade-gap {
+      from {
+        background-color: var(--lyplus-text-secondary);
+      }
+      to {
+        background-color: var(--lyplus-text-primary);
+      }
+    }
+
+    /* Scroll animation */
+    @keyframes lyrics-scroll {
+      from {
+        transform: translateY(var(--scroll-delta)) translateZ(1px);
+      }
+      to {
+        transform: translateY(0) translateZ(1px);
+      }
+    }
+
+    /* Character grow animation - exact copy from YouLyPlus */
+    @keyframes grow-dynamic {
+      0% {
+        transform: matrix3d(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1);
+        filter: drop-shadow(0 0 0 rgba(255, 255, 255, 0));
+      }
+      25%,
+      30% {
+        transform: matrix3d(
+          calc(var(--max-scale) * calc(var(--lyplus-font-size-base-grow) / 25)),
+          0,
+          0,
+          0,
+          0,
+          calc(var(--max-scale) * calc(var(--lyplus-font-size-base-grow) / 25)),
+          0,
+          0,
+          0,
+          0,
+          1,
+          0,
+          calc(
+            var(--char-offset-x, 0) *
+              calc(var(--lyplus-font-size-base-grow) / 25)
+          ),
+          var(--translate-y-peak, -2),
+          0,
+          1
+        );
+        filter: drop-shadow(
+          0 0 0.1em rgba(255, 255, 255, var(--shadow-intensity))
+        );
+      }
+      100% {
+        transform: translateY(-3.5%) translateZ(1px);
+        filter: drop-shadow(0 0 0 rgba(255, 255, 255, 0));
+      }
+    }
+
+    @keyframes grow-static {
+      0%,
+      100% {
+        transform: scale3d(1.01, 1.01, 1.1) translateY(-0.05%);
+        text-shadow: 0 0 0 rgba(255, 255, 255, 0);
+      }
+      30%,
+      40% {
+        transform: scale3d(1.1, 1.1, 1.1) translateY(-0.05%);
+        text-shadow: 0 0 0.3em rgba(255, 255, 255, 0.5);
+      }
+    }
+
+    /* Fade in animation */
+    @keyframes fadeInUp {
+      from {
+        opacity: 0;
+        transform: translateY(20px);
+      }
+      to {
+        opacity: 0.7;
+        transform: translateY(0);
+      }
+    }
+
+    /* Legacy support */
+    .opposite-turn {
+      text-align: right;
+    }
+
+    .singer-right {
+      text-align: right;
+      justify-content: flex-end;
+    }
+
+    .singer-left {
+      text-align: left;
+      justify-content: flex-start;
+    }
+
+    /* Legacy progress-text for backward compatibility */
+    .progress-text {
+      position: relative;
+      display: inline-block;
+      background: linear-gradient(
+        to right,
+        var(--lyplus-text-primary) 0%,
+        var(--lyplus-text-primary) var(--line-progress, 0%),
+        var(--lyplus-text-secondary) var(--line-progress, 0%),
+        var(--lyplus-text-secondary) 100%
+      );
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+      color: var(--lyplus-text-secondary);
+      transform: translate3d(0, 0, 0);
+      will-change: background-size;
+    }
+
+    .progress-text::before {
+      display: none;
+    }
+
+    .active-line {
+      font-weight: bold;
+    }
+
+    .background-text {
+      display: block;
+      color: var(--lyplus-text-secondary);
+      font-size: 0.8em;
+      font-style: normal;
+      margin: 0;
+      flex-shrink: 0;
+      line-height: 1.1;
+    }
+
+    .background-text.before {
+      order: -1;
+    }
+
+    .background-text.after {
+      order: 1;
+    }
+
+    .instrumental-line {
+      display: inline-flex;
+      align-items: baseline;
+      gap: 8px;
+      color: var(--lyplus-text-secondary);
+      font-size: 0.9em;
+      padding: 4px 10px;
+      animation: fadeInUp 220ms ease;
+      font-weight: normal;
+    }
+
+    .instrumental-duration {
+      color: var(--lyplus-text-secondary);
+      font-size: 0.8em;
     }
   `;
 
@@ -572,6 +1350,28 @@ export class AmLyrics extends LitElement {
   private isUserScrolling = false;
 
   private isProgrammaticScroll = false;
+
+  // Cached DOM elements for animation updates
+  private cachedLyricsLines: HTMLElement[] = [];
+
+  // Active line tracking
+  private activeLineIds: Set<string> = new Set();
+  private currentPrimaryActiveLine: HTMLElement | null = null;
+  private lastPrimaryActiveLine: HTMLElement | null = null;
+
+  // Scroll animation state
+  private scrollAnimationState: {
+    isAnimating: boolean;
+    pendingUpdate: number | null;
+  } | null = null;
+  private currentScrollOffset = 0;
+  private animatingLines: HTMLElement[] = [];
+  private scrollUnlockTimeout?: ReturnType<typeof setTimeout>;
+  private scrollAnimationTimeout?: ReturnType<typeof setTimeout>;
+
+  // Syllable animation tracking
+  private lastActiveIndex = 0;
+  private visibleLineIds: Set<string> = new Set();
 
   connectedCallback() {
     super.connectedCallback();
@@ -1060,9 +1860,16 @@ export class AmLyrics extends LitElement {
 
   firstUpdated() {
     // Set up scroll event listener for user scroll detection
+    // Use wheel/touchmove which are guaranteed to be user initiated,
+    // unlike 'scroll' which fires for both user and programmatic/inertia
     if (this.lyricsContainer) {
       this.lyricsContainer.addEventListener(
-        'scroll',
+        'wheel',
+        this.handleUserScroll.bind(this),
+        { passive: true },
+      );
+      this.lyricsContainer.addEventListener(
+        'touchmove',
         this.handleUserScroll.bind(this),
         { passive: true },
       );
@@ -1120,17 +1927,67 @@ export class AmLyrics extends LitElement {
       const timeDiff = Math.abs(this.currentTime - oldTime);
 
       const newActiveLines = this.findActiveLineIndices(this.currentTime);
+      const oldActiveLines = this.activeLineIndices;
 
       // Reset animation if active lines change or if we skip time.
       // A threshold of 0.5s (500ms) is used to detect a "skip".
       const linesChanged = !AmLyrics.arraysEqual(
         newActiveLines,
-        this.activeLineIndices,
+        oldActiveLines,
       );
+
       if (linesChanged || timeDiff > 0.5) {
+        // Reset syllables from lines that are no longer active
+        if (this.lyricsContainer) {
+          for (const lineIndex of oldActiveLines) {
+            if (!newActiveLines.includes(lineIndex)) {
+              const lineElement = this.lyricsContainer.querySelector(
+                `#lyrics-line-${lineIndex}`,
+              ) as HTMLElement;
+              if (lineElement) {
+                this.resetSyllables(lineElement, timeDiff > 0.5);
+              }
+            }
+          }
+        }
         this.startAnimationFromTime(this.currentTime);
       }
-      // For small, continuous updates, we do nothing and let the animation loop handle it.
+
+      // YouLyPlus-style syllable animation updates
+      const currentTimeMs = this.currentTime;
+      if (this.lyricsContainer) {
+        // Update syllables in active lines
+        for (const lineIndex of this.activeLineIndices) {
+          const lineElement = this.lyricsContainer.querySelector(
+            `#lyrics-line-${lineIndex}`,
+          ) as HTMLElement;
+          if (lineElement) {
+            this.updateSyllablesForLine(lineElement, currentTimeMs);
+          }
+        }
+
+        // Also update syllables in active gap lines (breathing dots)
+        const activeGaps = this.lyricsContainer.querySelectorAll(
+          '.lyrics-gap.active',
+        );
+        activeGaps.forEach((gapLine) => {
+          this.updateSyllablesForLine(gapLine as HTMLElement, currentTimeMs);
+        });
+
+        // Update position classes for YouLyPlus blur/opacity effect
+        if (this.activeLineIndices.length > 0) {
+          const primaryLineIndex = this.activeLineIndices[0];
+          const primaryLine = this.lyricsContainer.querySelector(
+            `#lyrics-line-${primaryLineIndex}`,
+          ) as HTMLElement;
+
+          if (primaryLine && primaryLine !== this.currentPrimaryActiveLine) {
+            this.lastPrimaryActiveLine = this.currentPrimaryActiveLine;
+            this.currentPrimaryActiveLine = primaryLine;
+            this.updatePositionClasses(primaryLine);
+          }
+        }
+      }
     }
 
     if (
@@ -1139,7 +1996,12 @@ export class AmLyrics extends LitElement {
       changedProperties.has('activeLineIndices') &&
       this.activeLineIndices.length > 0
     ) {
-      this.scrollToActiveLine();
+      // Use YouLyPlus-style scroll if we have a current primary line
+      if (this.currentPrimaryActiveLine) {
+        this.scrollToActiveLineYouLy(this.currentPrimaryActiveLine);
+      } else {
+        this.scrollToActiveLine();
+      }
     }
 
     // Smoothly scroll to the indicator when entering a gap
@@ -1162,13 +2024,14 @@ export class AmLyrics extends LitElement {
   }
 
   private handleUserScroll() {
-    // Ignore programmatic scrolls
+    // Ignore programmatic scrolls (defensive check)
     if (this.isProgrammaticScroll) {
       return;
     }
 
     // Mark that user is currently scrolling
     this.isUserScrolling = true;
+    this.lyricsContainer?.classList.add('user-scrolling');
 
     // Clear any existing timeout
     if (this.userScrollTimeoutId) {
@@ -1378,6 +2241,56 @@ export class AmLyrics extends LitElement {
   }
 
   private handleLineClick(line: LyricsLine) {
+    // Reset all syllables to prevent highlighting conflicts during seek
+    if (this.lyricsContainer) {
+      const allLines = this.lyricsContainer.querySelectorAll('.lyrics-line');
+      allLines.forEach(lineEl => {
+        this.resetSyllables(lineEl as HTMLElement, true);
+        // Remove scroll-animate class to stop any scroll animations
+        lineEl.classList.remove('scroll-animate');
+      });
+      // Ensure container state is clean
+      this.lyricsContainer.classList.remove('wheel-scrolling');
+    }
+
+    // Cancel any ongoing scroll animations
+    if (this.scrollAnimationState) {
+      this.scrollAnimationState.isAnimating = false;
+      this.scrollAnimationState.pendingUpdate = null;
+    }
+
+    // Clear scroll animation timeouts
+    if (this.scrollUnlockTimeout) {
+      clearTimeout(this.scrollUnlockTimeout);
+      this.scrollUnlockTimeout = undefined;
+    }
+    if (this.scrollAnimationTimeout) {
+      clearTimeout(this.scrollAnimationTimeout);
+      this.scrollAnimationTimeout = undefined;
+    }
+
+    // Reset active line tracking to prevent scroll fighting
+    this.currentPrimaryActiveLine = null;
+    this.lastPrimaryActiveLine = null;
+    this.activeLineIds.clear();
+    this.animatingLines = [];
+
+    // Find the clicked line element and scroll to it with forceScroll (like YouLyPlus)
+    const clickedLineElement = this.lyricsContainer?.querySelector(
+      `.lyrics-line[data-start-time="${line.timestamp * 1000}"]`,
+    ) as HTMLElement | null;
+
+    if (clickedLineElement && this.lyricsContainer) {
+      // Update active line reference to the clicked line
+      this.currentPrimaryActiveLine = clickedLineElement;
+
+      // Reset currentScrollOffset to actual scroll position to prevent stale delta
+      this.currentScrollOffset = -this.lyricsContainer.scrollTop;
+
+      // Scroll to it with forceScroll to bypass staggered animation
+      this.scrollToYouLy(clickedLineElement, true);
+    }
+
     const event = new CustomEvent('line-click', {
       detail: {
         timestamp: line.timestamp,
@@ -1451,40 +2364,554 @@ export class AmLyrics extends LitElement {
 
   private scrollToInstrumental(insertBeforeIndex: number) {
     if (!this.lyricsContainer) return;
-    const target = this.lyricsContainer.querySelector(
-      `.lyrics-line:nth-child(${insertBeforeIndex + 1})`,
+    
+    // Find the gap element by ID instead of nth-child
+    const gapTarget = this.lyricsContainer.querySelector(
+      `#gap-${insertBeforeIndex}`,
     ) as HTMLElement | null;
 
-    if (target) {
-      const containerHeight = this.lyricsContainer.clientHeight;
-      const lineTop = target.offsetTop;
-      const lineHeight = target.clientHeight;
+    if (gapTarget) {
+      // Use same scroll position as lyrics (scroll-padding-top from top), not center
+      // This matches YouLyPlus behavior where gaps don't scroll to a different position
+      const paddingTop = this.getScrollPaddingTop();
+      const targetTranslateY = paddingTop - gapTarget.offsetTop;
+      
+      this.isProgrammaticScroll = true;
+      this.animateScrollYouLy(targetTranslateY, false);
+      
+      setTimeout(() => {
+        this.isProgrammaticScroll = false;
+      }, 250);
+    }
+  }
 
-      // Check if the target line has background text placed before the main text
-      const hasBackgroundBefore = target.querySelector(
-        '.background-text.before',
+  // === YouLyPlus-style Animation Methods ===
+
+  /**
+   * Get the scroll padding top value from CSS variable
+   */
+  private getScrollPaddingTop(): number {
+    if (!this.lyricsContainer) return 0;
+    const style = getComputedStyle(this);
+    const paddingTopValue =
+      style.getPropertyValue('--lyrics-scroll-padding-top') || '25%';
+    if (paddingTopValue.includes('%')) {
+      return (
+        this.lyricsContainer.clientHeight * (parseFloat(paddingTopValue) / 100)
       );
+    }
+    return parseFloat(paddingTopValue) || 0;
+  }
 
-      // Calculate the offset to center the main text content, accounting for background text placement
-      let offsetAdjustment = 0;
-      if (hasBackgroundBefore) {
-        const backgroundElement = hasBackgroundBefore as HTMLElement;
-        offsetAdjustment = backgroundElement.clientHeight / 2; // Adjust to focus on main content
+  /**
+   * Animate scroll with staggered delay for smooth YouLyPlus-style scrolling
+   * (Exact copy from YouLyPlus _animateScroll)
+   */
+  private animateScrollYouLy(newTranslateY: number, forceScroll = false): void {
+    if (!this.lyricsContainer) return;
+    const parent = this.lyricsContainer;
+
+    if (!this.scrollAnimationState) {
+      this.scrollAnimationState = {
+        isAnimating: false,
+        pendingUpdate: null,
+      };
+      this.animatingLines = [];
+    }
+
+    const state = this.scrollAnimationState;
+
+    if (state.isAnimating && !forceScroll) {
+      state.pendingUpdate = newTranslateY;
+      return;
+    }
+
+    if (this.scrollUnlockTimeout) {
+      clearTimeout(this.scrollUnlockTimeout);
+      this.scrollUnlockTimeout = undefined;
+    }
+
+    if (this.scrollAnimationTimeout) {
+      clearTimeout(this.scrollAnimationTimeout);
+      this.scrollAnimationTimeout = undefined;
+    }
+
+    const animatingLines = this.animatingLines;
+    if (animatingLines.length > 0) {
+      for (let i = 0; i < animatingLines.length; i++) {
+        const line = animatingLines[i];
+        line.classList.remove('scroll-animate');
+        line.style.removeProperty('--scroll-delta');
+        line.style.removeProperty('--lyrics-line-delay');
       }
+      animatingLines.length = 0;
+    }
 
-      const top =
-        lineTop - containerHeight / 2 + lineHeight / 2 - offsetAdjustment;
+    // Cancel and replay existing scroll animations
+    const animations = this.lyricsContainer.getAnimations({ subtree: true });
+    for (const anim of animations) {
+      if ((anim as CSSAnimation).animationName === 'lyrics-scroll') {
+        anim.cancel();
+        anim.play();
+      }
+    }
 
-      // Use requestAnimationFrame for smoother iOS performance
-      requestAnimationFrame(() => {
-        this.isProgrammaticScroll = true;
-        this.lyricsContainer?.scrollTo({ top, behavior: 'smooth' });
-        // Reset the flag after a short delay to allow the scroll to complete
-        setTimeout(() => {
-          this.isProgrammaticScroll = false;
-        }, 100);
+    const targetTop = Math.max(0, -newTranslateY);
+    // Always use actual scroll position - don't fall back to stale currentScrollOffset
+    // The || operator treats 0 as falsy, which caused bounce when scrollTop was 0
+    const prevOffset = -parent.scrollTop;
+    const delta = prevOffset - newTranslateY;
+    this.currentScrollOffset = newTranslateY;
+
+    if (forceScroll) {
+      parent.scrollTo({ top: targetTop, behavior: 'smooth' });
+      state.isAnimating = false;
+      state.pendingUpdate = null;
+      return;
+    }
+
+    // Get cached lines for staggered animation
+    const lineElements = this.lyricsContainer.querySelectorAll('.lyrics-line');
+    const lineArray = Array.from(lineElements) as HTMLElement[];
+
+    const referenceLine =
+      this.currentPrimaryActiveLine ||
+      this.lastPrimaryActiveLine ||
+      lineArray[0];
+
+    if (!referenceLine) return;
+
+    const referenceIndex = lineArray.indexOf(referenceLine);
+    if (referenceIndex === -1) return;
+
+    const delayIncrement = 30;
+    const lookBehind = 5;
+    const lookAhead = 20;
+    const len = lineArray.length;
+
+    const start = Math.max(0, referenceIndex - lookBehind);
+    const end = Math.min(len, referenceIndex + lookAhead);
+
+    let maxAnimationDuration = 0;
+    let delayCounter = 0;
+
+    for (let i = start; i < end; i++) {
+      const line = lineArray[i];
+      const delay = i >= referenceIndex ? delayCounter++ * delayIncrement : 0;
+
+      line.style.setProperty('--scroll-delta', `${delta}px`);
+      line.style.setProperty('--lyrics-line-delay', `${delay}ms`);
+      line.classList.add('scroll-animate');
+
+      animatingLines.push(line);
+
+      const lineDuration = 400 + delay;
+      if (lineDuration > maxAnimationDuration) {
+        maxAnimationDuration = lineDuration;
+      }
+    }
+
+    state.isAnimating = true;
+    const BASE_DURATION = 400;
+
+    this.scrollUnlockTimeout = setTimeout(() => {
+      state.isAnimating = false;
+
+      if (state.pendingUpdate !== null) {
+        const pendingValue = state.pendingUpdate;
+        state.pendingUpdate = null;
+        this.animateScrollYouLy(pendingValue, false);
+      }
+    }, BASE_DURATION);
+
+    this.scrollAnimationTimeout = setTimeout(() => {
+      for (let i = 0; i < animatingLines.length; i++) {
+        const line = animatingLines[i];
+        line.classList.remove('scroll-animate');
+        line.style.removeProperty('--scroll-delta');
+        line.style.removeProperty('--lyrics-line-delay');
+      }
+      animatingLines.length = 0;
+      this.scrollAnimationTimeout = undefined;
+    }, maxAnimationDuration + 50);
+
+    parent.scrollTo({ top: targetTop, behavior: 'instant' });
+  }
+
+  /**
+   * Update position classes for YouLyPlus-style opacity/blur gradients
+   */
+  private updatePositionClasses(lineToScroll: HTMLElement): void {
+    if (!this.lyricsContainer) return;
+
+    const positionClasses = [
+      'lyrics-activest',
+      'post-active-line',
+      'next-active-line',
+      'prev-1',
+      'prev-2',
+      'prev-3',
+      'prev-4',
+      'next-1',
+      'next-2',
+      'next-3',
+      'next-4',
+    ];
+
+    // Remove old position classes
+    this.lyricsContainer
+      .querySelectorAll('.' + positionClasses.join(', .'))
+      .forEach(el => el.classList.remove(...positionClasses));
+
+    // Add new position classes
+    lineToScroll.classList.add('lyrics-activest');
+
+    const lineElements = Array.from(
+      this.lyricsContainer.querySelectorAll('.lyrics-line'),
+    ) as HTMLElement[];
+    const scrollLineIndex = lineElements.indexOf(lineToScroll);
+
+    for (
+      let i = Math.max(0, scrollLineIndex - 4);
+      i <= Math.min(lineElements.length - 1, scrollLineIndex + 4);
+      i++
+    ) {
+      const position = i - scrollLineIndex;
+      if (position === 0) continue;
+      const element = lineElements[i];
+      if (position === -1) element.classList.add('post-active-line');
+      else if (position === 1) element.classList.add('next-active-line');
+      else if (position < 0)
+        element.classList.add(`prev-${Math.abs(position)}`);
+      else element.classList.add(`next-${position}`);
+    }
+  }
+
+  /**
+   * Scroll to active line with YouLyPlus-style animation
+   */
+  private scrollToActiveLineYouLy(
+    activeLine: HTMLElement,
+    forceScroll = false,
+  ): void {
+    if (!activeLine || !this.lyricsContainer) return;
+
+    const paddingTop = this.getScrollPaddingTop();
+    const targetTranslateY = paddingTop - activeLine.offsetTop;
+
+    const scrollContainerTop = this.lyricsContainer.getBoundingClientRect().top;
+
+    // Skip if already at target position
+    if (
+      !forceScroll &&
+      Math.abs(
+        activeLine.getBoundingClientRect().top -
+          scrollContainerTop -
+          paddingTop,
+      ) < 1
+    ) {
+      return;
+    }
+
+    this.lyricsContainer.classList.remove('not-focused', 'user-scrolling');
+    this.isProgrammaticScroll = true;
+    this.isUserScrolling = false;
+
+    if (this.userScrollTimeoutId) {
+      clearTimeout(this.userScrollTimeoutId);
+      this.userScrollTimeoutId = undefined;
+    }
+
+    setTimeout(() => {
+      this.isProgrammaticScroll = false;
+    }, 250);
+
+    this.animateScrollYouLy(targetTranslateY, forceScroll);
+  }
+
+  /**
+   * Update syllable highlight animation - apply CSS wipe animation
+   * (Exact copy from YouLyPlus _updateSyllableAnimation)
+   */
+  private updateSyllableAnimation(syllable: HTMLElement): void {
+    if (syllable.classList.contains('highlight')) return;
+
+    const classList = syllable.classList;
+    const isRTL = classList.contains('rtl-text');
+    const charSpans = Array.from(
+      syllable.querySelectorAll('span.char'),
+    ) as HTMLElement[];
+    const wordElement = syllable.parentElement?.parentElement; // syllable-wrap -> word
+    const allWordCharSpans = wordElement
+      ? (Array.from(wordElement.querySelectorAll('span.char')) as HTMLElement[])
+      : [];
+    const isGrowable = wordElement?.classList.contains('growable');
+    const isFirstSyllable =
+      syllable.getAttribute('data-syllable-index') === '0';
+    const isFirstInContainer = isFirstSyllable; // Simplified
+    const isGap = syllable.closest('.lyrics-gap') !== null;
+
+    // Get duration from data attribute
+    const syllableDurationMs =
+      parseFloat(syllable.getAttribute('data-duration') || '0') || 300;
+    const wordDurationMs =
+      parseFloat(
+        syllable.getAttribute('data-word-duration') ||
+          syllable.getAttribute('data-duration') ||
+          '0',
+      ) || syllableDurationMs;
+
+    // Use a Map to collect animations like YouLyPlus
+    const charAnimationsMap = new Map<HTMLElement, string>();
+    const styleUpdates: Array<{
+      element: HTMLElement;
+      property: string;
+      value: string;
+    }> = [];
+
+    // Step 1: Grow Pass - apply grow-dynamic to ALL word chars on first syllable
+    if (isGrowable && isFirstSyllable && allWordCharSpans.length > 0) {
+      const finalDuration = wordDurationMs;
+      const baseDelayPerChar = finalDuration * 0.09;
+      const growDurationMs = finalDuration * 1.5;
+
+      allWordCharSpans.forEach(span => {
+        const horizontalOffset = parseFloat(
+          span.dataset.horizontalOffset || '0',
+        );
+        // Use syllableCharIndex like YouLyPlus, not loop index
+        const charIndex = parseFloat(span.dataset.syllableCharIndex || '0');
+        const growDelay = baseDelayPerChar * charIndex;
+
+        // READ DATA ATTRIBUTES for style values
+        const maxScale = span.dataset.maxScale || '1.1';
+        const shadowIntensity = span.dataset.shadowIntensity || '0.6';
+        const translateYPeak = span.dataset.translateYPeak || '-2';
+
+        charAnimationsMap.set(
+          span,
+          `grow-dynamic ${growDurationMs}ms ease-in-out ${growDelay}ms forwards`,
+        );
+
+        // Push style updates to be applied imperatively
+        styleUpdates.push({
+          element: span,
+          property: '--char-offset-x',
+          value: `${horizontalOffset}`, // Fixed: removed px suitable for matrix3d
+        });
+        styleUpdates.push({
+          element: span,
+          property: '--max-scale',
+          value: maxScale,
+        });
+        styleUpdates.push({
+          element: span,
+          property: '--shadow-intensity',
+          value: shadowIntensity,
+        });
+        styleUpdates.push({
+          element: span,
+          property: '--translate-y-peak',
+          value: `${translateYPeak}`, // Fixed: removed % because matrix3d expects raw number
+        });
       });
     }
+
+    // Step 2: Wipe Pass - apply wipe animation per character in this syllable
+    if (charSpans.length > 0) {
+      charSpans.forEach((span, charIndex) => {
+        const startPct = parseFloat(span.dataset.wipeStart || '0');
+        const durationPct = parseFloat(span.dataset.wipeDuration || '0');
+
+        const wipeDelay = syllableDurationMs * startPct;
+        const wipeDuration = syllableDurationMs * durationPct;
+
+        const useStartAnimation = isFirstInContainer && charIndex === 0;
+        const charWipeAnimation = useStartAnimation
+          ? isRTL
+            ? 'start-wipe-rtl'
+            : 'start-wipe'
+          : isRTL
+            ? 'wipe-rtl'
+            : 'wipe';
+
+        // Get existing animation from map (grow-dynamic) and combine with wipe
+        const existingAnimation =
+          charAnimationsMap.get(span) || span.style.animation || '';
+        const animationParts: string[] = [];
+
+        if (existingAnimation && existingAnimation.includes('grow-dynamic')) {
+          animationParts.push(existingAnimation.split(',')[0].trim());
+        }
+
+        if (wipeDuration > 0) {
+          animationParts.push(
+            `${charWipeAnimation} ${wipeDuration}ms linear ${wipeDelay}ms forwards`,
+          );
+        }
+
+        charAnimationsMap.set(span, animationParts.join(', '));
+      });
+    } else {
+      // For regular syllables without char spans, apply syllable-level wipe
+      const wipeRatio = parseFloat(
+        syllable.getAttribute('data-wipe-ratio') || '1',
+      );
+      const visualDuration = syllableDurationMs * wipeRatio;
+
+      const wipeAnimation = isFirstInContainer
+        ? isRTL
+          ? 'start-wipe-rtl'
+          : 'start-wipe'
+        : isRTL
+          ? 'wipe-rtl'
+          : 'wipe';
+
+      const currentWipeAnimation = isGap ? 'fade-gap' : wipeAnimation;
+      const syllableAnimation = `${currentWipeAnimation} ${visualDuration}ms ${isGap ? 'ease-out' : 'linear'} forwards`;
+      syllable.style.animation = syllableAnimation;
+    }
+
+    // Apply all collected animations at once (like YouLyPlus)
+    classList.remove('pre-highlight');
+    classList.add('highlight');
+
+    // Explicitly handle double-wipe prevention via class
+    if (charSpans.length > 0) {
+      classList.add('char-animating');
+      // Explicitly clear any syllable animation to prevent double wipe
+      syllable.style.animation = '';
+      syllable.style.backgroundImage = 'none';
+    } else {
+      classList.remove('char-animating');
+    }
+
+    // Apply char animations from map AND ensure styles are set
+    for (const [span, animationString] of charAnimationsMap.entries()) {
+      span.style.transition = 'none'; // Prevent transition conflicts
+      span.style.animation = animationString;
+      span.classList.add('highlight');
+
+      // Also make sure we re-apply the style properties if they were missed in the loop above
+      // (This acts as a failsafe if the grow block didn't run for this specific char but we are wiping it)
+      if (
+        !styleUpdates.some(
+          u => u.element === span && u.property === '--max-scale',
+        )
+      ) {
+        const maxScale = span.dataset.maxScale;
+        if (maxScale) span.style.setProperty('--max-scale', maxScale);
+
+        const shadowIntensity = span.dataset.shadowIntensity;
+        if (shadowIntensity)
+          span.style.setProperty('--shadow-intensity', shadowIntensity);
+
+        const translateYPeak = span.dataset.translateYPeak;
+        if (translateYPeak)
+          span.style.setProperty('--translate-y-peak', `${translateYPeak}`); // Fixed: removed %
+
+        const horizontalOffset = span.dataset.horizontalOffset;
+        if (horizontalOffset)
+          span.style.setProperty('--char-offset-x', `${horizontalOffset}`); // Fixed: removed px
+      }
+    }
+
+    // Apply style updates
+    for (const update of styleUpdates) {
+      update.element.style.setProperty(update.property, update.value);
+    }
+  }
+
+  /**
+   * Reset syllable animation state
+   */
+  private resetSyllable(syllable: HTMLElement, noFade = false): void {
+    if (!syllable) return;
+    syllable.style.animation = '';
+    if (!syllable.classList.contains('finished') && !noFade) {
+      syllable.classList.add('finished');
+    }
+    syllable.classList.add('cleanup');
+    syllable.style.removeProperty('--pre-wipe-duration');
+    syllable.style.removeProperty('--pre-wipe-delay');
+
+    // Reset character animations if present
+    syllable.querySelectorAll('span.char').forEach(span => {
+      (span as HTMLElement).style.animation = '';
+    });
+
+    requestAnimationFrame(() => {
+      setTimeout(() => {
+        syllable.classList.remove(
+          'highlight',
+          'finished',
+          'pre-highlight',
+          'cleanup',
+        );
+      }, 16);
+    });
+  }
+
+  /**
+   * Reset all syllables in a line
+   */
+  private resetSyllables(line: HTMLElement, noFade = false): void {
+    if (!line) return;
+    Array.from(line.getElementsByClassName('lyrics-syllable')).forEach(
+      syllable => this.resetSyllable(syllable as HTMLElement, noFade),
+    );
+  }
+
+  /**
+   * Update syllables based on current time
+   */
+  private updateSyllablesForLine(
+    line: HTMLElement,
+    currentTimeMs: number,
+  ): void {
+    const syllables = line.querySelectorAll('.lyrics-syllable');
+
+    syllables.forEach(syllableEl => {
+      const syllable = syllableEl as HTMLElement;
+      const startTime = parseFloat(
+        syllable.getAttribute('data-start-time') || '0',
+      );
+      const endTime = parseFloat(syllable.getAttribute('data-end-time') || '0');
+
+      if (!startTime) return;
+
+      const classList = syllable.classList;
+      const hasHighlight = classList.contains('highlight');
+      const hasFinished = classList.contains('finished');
+      const hasPreHighlight = classList.contains('pre-highlight');
+      const hasActiveState = hasHighlight || hasFinished || hasPreHighlight;
+
+      // Early exit if syllable is far in the future
+      if (currentTimeMs < startTime - 1000 && !hasActiveState) return;
+
+      if (currentTimeMs >= startTime && currentTimeMs <= endTime) {
+        // Currently active
+        if (!hasHighlight) {
+          this.updateSyllableAnimation(syllable);
+        }
+        if (hasFinished) {
+          classList.remove('finished');
+        }
+      } else if (currentTimeMs > endTime) {
+        // Finished
+        if (!hasFinished) {
+          if (!hasHighlight) {
+            this.updateSyllableAnimation(syllable);
+          }
+          classList.add('finished');
+        }
+      } else {
+        // Not yet started
+        if (hasHighlight || hasFinished) {
+          this.resetSyllable(syllable);
+        }
+      }
+    });
   }
 
   private animateProgress() {
@@ -1792,6 +3219,13 @@ export class AmLyrics extends LitElement {
 
       return this.lyrics.map((line, lineIndex) => {
         const isLineActive = this.activeLineIndices.includes(lineIndex);
+        const lineId = `lyrics-line-${lineIndex}`;
+
+        // Calculate line timing
+        const lineStartTime = line.text[0]?.timestamp || 0;
+        const lineEndTime = line.text[line.text.length - 1]?.endtime || 0;
+
+        // Check for background vocals playing
         const bgIsPlayingNow =
           line.backgroundText && line.backgroundText.length > 0
             ? line.backgroundText.some(
@@ -1801,209 +3235,253 @@ export class AmLyrics extends LitElement {
               )
             : false;
 
-        const backgroundPlacement = AmLyrics.getBackgroundTextPlacement(line);
         const shouldShowBackground =
           line.backgroundText &&
           line.backgroundText.length > 0 &&
           (isLineActive || bgIsPlayingNow);
 
-        // Create background text element
-        const backgroundTextElement = shouldShowBackground
-          ? html`<span class="background-text ${backgroundPlacement}">
-              ${line.backgroundText!.map((syllable, wordIndex) => {
-                const activeBackgroundWordIndex =
-                  this.activeBackgroundWordIndices.get(lineIndex) ?? -1;
-                const isWordActive =
-                  isLineActive && wordIndex === activeBackgroundWordIndex;
-                const isWordPassed =
-                  isLineActive &&
-                  (wordIndex < activeBackgroundWordIndex ||
-                    (activeBackgroundWordIndex === -1 &&
-                      this.currentTime > syllable.endtime));
-                let progress = 0;
-                if (isWordActive) {
-                  progress = this.interpolate
-                    ? (this.backgroundWordProgress.get(lineIndex) ?? 0)
-                    : 1;
-                } else if (isWordPassed) {
-                  progress = 1;
-                }
+        // Create background vocals container
+        const backgroundVocalElement = shouldShowBackground
+          ? html`<p class="background-vocal-container">
+              ${line.backgroundText!.map((syllable, syllableIndex) => {
+                const startTimeMs = syllable.timestamp;
+                const endTimeMs = syllable.endtime;
+                const durationMs = endTimeMs - startTimeMs;
 
-                const text = syllable.text || '';
-                const hasTrailingSpace = text.endsWith(' ');
-                const contentText = hasTrailingSpace ? text.slice(0, -1) : text;
-
-                return html`<span
-                    class="progress-text"
-                    style="--line-progress: ${progress *
-                    100}%; margin-right: 0; --transition-style: ${isLineActive
-                      ? 'all'
-                      : 'color'}"
-                    >${contentText}</span
-                  >${hasTrailingSpace ? ' ' : ''}`;
+                return html`<span class="lyrics-word">
+                  <span class="lyrics-syllable-wrap">
+                    <span
+                      class="lyrics-syllable"
+                      data-start-time="${startTimeMs}"
+                      data-end-time="${endTimeMs}"
+                      data-duration="${durationMs}"
+                      data-syllable-index="${syllableIndex}"
+                      >${syllable.text}</span
+                    >
+                  </span>
+                </span>`;
               })}
-            </span>`
+            </p>`
           : '';
 
-        // Create main text element (original lyrics)
-        const mainTextContent = html`<span>
-          ${line.text.map((syllable, wordIndex) => {
-            const activeMainWordIndex =
-              this.activeMainWordIndices.get(lineIndex) ?? -1;
-            const isWordActive =
-              isLineActive && wordIndex === activeMainWordIndex;
-            const isWordPassed =
-              isLineActive &&
-              (wordIndex < activeMainWordIndex ||
-                (activeMainWordIndex === -1 &&
-                  this.currentTime > syllable.endtime));
-            let progress = 0;
-            if (isWordActive) {
-              if (line.isWordSynced === false) {
-                progress = 1;
-              } else {
-                progress = this.interpolate
-                  ? (this.mainWordProgress.get(lineIndex) ?? 0)
-                  : 1;
-              }
-            } else if (isWordPassed) {
-              progress = 1;
-            }
-
+        // Create main vocals using YouLyPlus syllable structure
+        const mainVocalElement = html`<p class="main-vocal-container">
+          ${line.text.map((syllable, syllableIndex) => {
+            const startTimeMs = syllable.timestamp;
+            const endTimeMs = syllable.endtime;
+            const durationMs = endTimeMs - startTimeMs;
             const text = syllable.text || '';
-            const hasTrailingSpace = text.endsWith(' ');
-            const contentText = hasTrailingSpace ? text.slice(0, -1) : text;
+            const trimmedText = text.trim();
+
+            // YouLyPlus growable criteria: short words (<=7 chars), long duration (>=1000ms), not CJK, not RTL
+            const isCJK =
+              /[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]/.test(
+                trimmedText,
+              );
+            const isRTL =
+              /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\u0590-\u05FF]/.test(
+                trimmedText,
+              );
+            const isGrowable =
+              !isCJK &&
+              !isRTL &&
+              trimmedText.length <= 7 &&
+              trimmedText.length > 0 &&
+              durationMs >= 1000;
+
+            // Optional romanization per syllable
+            const romanizedText =
+              this.showRomanization && syllable.romanizedText
+                ? html`<span class="lyrics-syllable transliteration"
+                    >${syllable.romanizedText}</span
+                  >`
+                : '';
+
+            // For growable words, wrap each character in a span with YouLyPlus applyGrowthStyles
+            const syllableContent = isGrowable
+              ? html`${text.split('').map((char, charIndex) => {
+                  if (char === ' ') {
+                    return ' ';
+                  }
+                  const numChars = trimmedText.length;
+                  const charStartPercent = charIndex / text.length;
+
+                  // YouLyPlus emphasisMetrics calculation
+                  const minDuration = 1000;
+                  const maxDuration = 5000;
+                  const easingPower = 3;
+                  const progress = Math.min(
+                    1,
+                    Math.max(
+                      0,
+                      (durationMs - minDuration) / (maxDuration - minDuration),
+                    ),
+                  );
+                  const easedProgress = Math.pow(progress, easingPower);
+
+                  // Decay calculation for long/short words
+                  const isLongWord = numChars > 5;
+                  const isShortDuration = durationMs < 1500;
+                  let maxDecayRate = 0;
+                  if (isLongWord || isShortDuration) {
+                    let decayStrength = 0;
+                    if (isLongWord)
+                      decayStrength += Math.min((numChars - 5) / 3, 1.0) * 0.4;
+                    if (isShortDuration)
+                      decayStrength +=
+                        Math.max(0, 1.0 - (durationMs - 1000) / 500) * 0.4;
+                    maxDecayRate = Math.min(decayStrength, 0.85);
+                  }
+
+                  // Per-character calculations (exact YouLyPlus logic)
+                  const positionInWord =
+                    numChars > 1 ? charIndex / (numChars - 1) : 0;
+                  const decayFactor = 1.0 - positionInWord * maxDecayRate;
+                  const charProgress = easedProgress * decayFactor;
+
+                  const baseGrowth = numChars <= 3 ? 0.07 : 0.05;
+                  const charMaxScale = 1.0 + baseGrowth + charProgress * 0.1;
+                  const charShadowIntensity = 0.4 + charProgress * 0.4;
+                  const normalizedGrowth = (charMaxScale - 1.0) / 0.13;
+                  const charTranslateYPeak = -normalizedGrowth * 6;
+
+                  // Horizontal offset (simplified - YouLyPlus uses actual text width measurement)
+                  const position = (charIndex + 0.5) / numChars;
+                  const horizontalOffset =
+                    (position - 0.5) * 2 * ((charMaxScale - 1.0) * 25);
+
+                  // MOVED TO DATA ATTRIBUTES and removed style attribute to avoid Lit conflict
+                  return html`<span
+                    class="char"
+                    data-char-index="${charIndex}"
+                    data-syllable-char-index="${charIndex}"
+                    data-wipe-start="${charStartPercent.toFixed(4)}"
+                    data-wipe-duration="${(1 / text.length).toFixed(4)}"
+                    data-horizontal-offset="${horizontalOffset.toFixed(2)}"
+                    data-max-scale="${charMaxScale.toFixed(3)}"
+                    data-shadow-intensity="${charShadowIntensity.toFixed(3)}"
+                    data-translate-y-peak="${charTranslateYPeak.toFixed(3)}"
+                    >${char}</span
+                  >`;
+                })}`
+              : text;
 
             return html`<span
-                class="progress-text"
-                style="--line-progress: ${progress *
-                100}%; margin-right: 0; --transition-style: ${isLineActive
-                  ? 'all'
-                  : 'color'}"
-                >${contentText}</span
-              >${hasTrailingSpace ? ' ' : ''}`;
-          })}
-        </span>`;
-
-        // Logic for Display Mode
-        // If Translation is ON:
-        //  - Original (mainTextContent) becomes small and top.
-        //  - Translation becomes Big and Bottom.
-        // If Translation is OFF:
-        //  - Original is Big.
-
-        const showTranslationLine = this.showTranslation && line.translation;
-        const showRomanizationLine =
-          this.showRomanization &&
-          (line.romanizedText ||
-            (line.text && line.text.some(s => s.romanizedText)));
-
-        let mainContent;
-
-        if (showTranslationLine) {
-          // Translation Mode
-
-          // 1. Original Text (Small, Top) - retains word sync
-          const originalWrapper = html`<div class="main-line-wrapper small">
-            ${mainTextContent}
-          </div>`;
-
-          // 2. Translation Text (Big, Bottom) - line sync (highlight whole line if active)
-          const translationText = html`<div class="translation-line">
-            <span
-              class="progress-text"
-              style="--line-progress: ${isLineActive ? 100 : 0}%"
+              class="lyrics-word ${isGrowable ? 'growable' : ''}"
             >
-              ${line.translation}
-            </span>
-          </div>`;
+              <span class="lyrics-syllable-wrap">
+                <span
+                  class="lyrics-syllable"
+                  data-start-time="${startTimeMs}"
+                  data-end-time="${endTimeMs}"
+                  data-duration="${durationMs}"
+                  data-syllable-index="0"
+                  data-wipe-ratio="1"
+                  >${syllableContent}</span
+                >
+                ${romanizedText}
+              </span>
+            </span>`;
+          })}
+        </p>`;
 
-          mainContent = html` ${originalWrapper} ${translationText} `;
-        } else {
-          // Standard Mode
-          mainContent = mainTextContent;
-        }
+        // Translation container (if enabled)
+        const translationElement =
+          this.showTranslation && line.translation
+            ? html`<div class="lyrics-translation-container">
+                ${line.translation}
+              </div>`
+            : '';
 
-        let romanizationInner;
-        if (line.text && line.text.some(s => s.romanizedText)) {
-          // Word-synced romanisation
-          romanizationInner = html`<span>
-            ${line.text.map((syllable, wordIndex) => {
-              const activeMainWordIndex =
-                this.activeMainWordIndices.get(lineIndex) ?? -1;
-              const isWordActive =
-                isLineActive && wordIndex === activeMainWordIndex;
-              const isWordPassed =
-                isLineActive &&
-                (wordIndex < activeMainWordIndex ||
-                  (activeMainWordIndex === -1 &&
-                    this.currentTime > syllable.endtime));
-              let progress = 0;
-              if (isWordActive) {
-                if (line.isWordSynced === false) {
-                  progress = 1;
-                } else {
-                  progress = this.interpolate
-                    ? (this.mainWordProgress.get(lineIndex) ?? 0)
-                    : 1;
-                }
-              } else if (isWordPassed) {
-                progress = 1;
-              }
+        // Line-synced romanization (fallback if no word-level romanization)
+        const lineRomanizationElement =
+          this.showRomanization &&
+          line.romanizedText &&
+          !line.text.some(s => s.romanizedText)
+            ? html`<div class="lyrics-romanization-container">
+                ${line.romanizedText}
+              </div>`
+            : '';
 
-              const text = syllable.romanizedText || '';
-              const hasTrailingSpace = text.endsWith(' ');
-              const contentText = hasTrailingSpace ? text.slice(0, -1) : text;
-
-              return html`<span
-                  class="progress-text"
-                  style="--line-progress: ${progress *
-                  100}%; margin-right: 0; --transition-style: ${isLineActive
-                    ? 'all'
-                    : 'color'}"
-                  >${contentText}</span
-                >${hasTrailingSpace ? ' ' : ''}`;
-            })}
-          </span>`;
-        } else {
-          // Line-synced romanisation
-          romanizationInner = html` <span
-            class="progress-text"
-            style="--line-progress: ${isLineActive ? 100 : 0}%"
-          >
-            ${line.romanizedText}
-          </span>`;
-        }
-
-        const romanizationContent = showRomanizationLine
-          ? html` <div class="romanized-line">${romanizationInner}</div> `
-          : '';
-
+        // Check for instrumental gap before this line
         let maybeInstrumentalBlock: unknown = null;
         if (instrumental && instrumental.insertBeforeIndex === lineIndex) {
-          const remainingSeconds = Math.max(
+          const isGapActive =
+            this.currentTime >= instrumental.gapStart &&
+            this.currentTime < instrumental.gapEnd;
+
+          // Calculate dot timing for fill-up animation (3 dots)
+          const gapDuration = instrumental.gapEnd - instrumental.gapStart;
+          const dotCount = 3;
+          const dotDuration = gapDuration / dotCount;
+
+          // Determine which dots should be highlighted based on current time
+          const elapsedInGap = Math.max(
             0,
-            Math.ceil((instrumental.gapEnd - this.currentTime) / 1000),
+            this.currentTime - instrumental.gapStart,
           );
-          if (remainingSeconds > 0) {
-            maybeInstrumentalBlock = html`<div
-              class="instrumental-line"
-              aria-label="Instrumental gap"
-            >
-              <span class="instrumental-duration">${remainingSeconds}s</span>
-            </div>`;
-          }
+          const dotProgress = elapsedInGap / dotDuration;
+
+          const getDotClass = (dotIndex: number) => {
+            if (!isGapActive) return '';
+            if (dotIndex < Math.floor(dotProgress)) return 'finished';
+            if (dotIndex === Math.floor(dotProgress) && dotProgress % 1 > 0)
+              return 'highlight';
+            return '';
+          };
+
+          // Create animated dots for instrumental gap
+          // gapStart, gapEnd, and dotDuration are already in milliseconds (same as currentTime)
+          maybeInstrumentalBlock = html`<div
+            id="gap-${lineIndex}"
+            class="lyrics-line lyrics-gap ${isGapActive ? 'active' : ''}"
+            data-start-time="${instrumental.gapStart}"
+            data-end-time="${instrumental.gapEnd}"
+          >
+            <div class="lyrics-line-container">
+              <p class="main-vocal-container">
+                <span class="lyrics-word">
+                  <span class="lyrics-syllable-wrap">
+                    <span
+                      class="lyrics-syllable ${getDotClass(0)}"
+                      data-start-time="${instrumental.gapStart}"
+                      data-end-time="${instrumental.gapStart + dotDuration}"
+                      data-duration="${dotDuration}"
+                    ></span>
+                  </span>
+                  <span class="lyrics-syllable-wrap">
+                    <span
+                      class="lyrics-syllable ${getDotClass(1)}"
+                      data-start-time="${instrumental.gapStart + dotDuration}"
+                      data-end-time="${instrumental.gapStart + dotDuration * 2}"
+                      data-duration="${dotDuration}"
+                    ></span>
+                  </span>
+                  <span class="lyrics-syllable-wrap">
+                    <span
+                      class="lyrics-syllable ${getDotClass(2)}"
+                      data-start-time="${instrumental.gapStart + dotDuration * 2}"
+                      data-end-time="${instrumental.gapEnd}"
+                      data-duration="${dotDuration}"
+                    ></span>
+                  </span>
+                </span>
+              </p>
+            </div>
+          </div>`;
         }
 
         return html`
           ${maybeInstrumentalBlock}
           <div
-            class="lyrics-line ${line.oppositeTurn
-              ? 'opposite-turn'
-              : ''} ${isLineActive ? 'active-line' : ''} ${line.alignment ===
-            'end'
+            id="${lineId}"
+            class="lyrics-line ${isLineActive
+              ? 'active'
+              : ''} ${line.alignment === 'end'
               ? 'singer-right'
               : 'singer-left'}"
+            data-start-time="${lineStartTime}"
+            data-end-time="${lineEndTime}"
             @click=${() => this.handleLineClick(line)}
             tabindex="0"
             @keydown=${(e: KeyboardEvent) => {
@@ -2012,16 +3490,21 @@ export class AmLyrics extends LitElement {
               }
             }}
           >
-            ${backgroundPlacement === 'before' ? backgroundTextElement : ''}
-            ${mainContent} ${romanizationContent}
-            ${backgroundPlacement === 'after' ? backgroundTextElement : ''}
+            <div class="lyrics-line-container">
+              ${mainVocalElement} ${backgroundVocalElement}
+              ${translationElement} ${lineRomanizationElement}
+            </div>
           </div>
         `;
       });
     };
 
     return html`
-      <div class="lyrics-container">
+      <div
+        class="lyrics-container blur-inactive-enabled ${this.isUserScrolling
+          ? 'user-scrolling'
+          : ''}"
+      >
         ${!this.isLoading && this.lyrics && this.lyrics.length > 0
           ? html`
               <div class="lyrics-header">
