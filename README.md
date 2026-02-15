@@ -16,7 +16,7 @@ Or, just use the CDN.
 
 ```html
 <script type="module">
-  import 'https://cdn.jsdelivr.net/npm/@uimaxbai/am-lyrics@latest/dist/src/am-lyrics.min.js';
+  import 'https://cdn.jsdelivr.net/npm/@uimaxbai/am-lyrics/dist/src/am-lyrics.min.js';
 </script>
 
 <am-lyrics
