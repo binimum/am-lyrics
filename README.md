@@ -1,5 +1,7 @@
 # \<am-lyrics>
 
+[![](https://data.jsdelivr.com/v1/package/npm/@uimaxbai/am-lyrics/badge)](https://www.jsdelivr.com/package/npm/@uimaxbai/am-lyrics)
+
 This webcomponent follows the [open-wc](https://github.com/open-wc/open-wc) recommendation.
 
 ## Installation
