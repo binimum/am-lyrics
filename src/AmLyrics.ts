@@ -2,10 +2,11 @@ import { html, css, LitElement } from 'lit';
 import { property, state, query } from 'lit/decorators.js';
 import { GoogleService } from './GoogleService.js';
 
-const VERSION = '0.6.5';
+const VERSION = '0.6.6';
 const INSTRUMENTAL_THRESHOLD_MS = 3000; // Show ellipsis for gaps >= 3s
 
 const KPOE_SERVERS = [
+  'https://lyricsplus.binimum.org',
   'https://lyricsplus.prjktla.workers.dev',
   'https://lyrics-plus-backend.vercel.app',
   'https://lyricsplus.onrender.com',
