@@ -2,7 +2,7 @@ import { html, css, LitElement } from 'lit';
 import { property, state, query } from 'lit/decorators.js';
 import { GoogleService } from './GoogleService.js';
 
-const VERSION = '1.0.2';
+const VERSION = '1.0.3';
 const INSTRUMENTAL_THRESHOLD_MS = 7000; // Show dots for gaps >= 7s
 
 const KPOE_SERVERS = [
@@ -21,6 +21,7 @@ interface Syllable {
   timestamp: number;
   endtime: number;
   romanizedText?: string;
+  lineSynced?: boolean; // New flag for line-synced lyrics
 }
 
 interface LyricsLine {
@@ -99,8 +100,8 @@ export class AmLyrics extends LitElement {
       --lyplus-gap-dot-size: 0.4em;
       --lyplus-gap-dot-margin: 0.08em;
 
-      --lyplus-font-size-base: 25px;
-      --lyplus-font-size-base-grow: 24.5;
+      --lyplus-font-size-base: 32px;
+      --lyplus-font-size-base-grow: 30;
       --lyplus-font-size-subtext: 0.6em;
 
       --lyplus-blur-amount: 0.07em;
@@ -599,9 +600,30 @@ export class AmLyrics extends LitElement {
       display: inline-block;
       width: var(--lyplus-gap-dot-size);
       height: var(--lyplus-gap-dot-size);
+      background-color: var(--lyplus-text-primary);
+      border-radius: 50%;
       margin: 0 var(--lyplus-gap-dot-margin);
-      overflow: hidden;
-      border-radius: 1em;
+    }
+
+    /* Line-synced lyrics should fade in instantly/quickly instead of wiping */
+    .lyrics-syllable.line-synced {
+      animation: fade-in-line 0.2s ease-out forwards !important;
+      background: transparent !important;
+      color: var(--lyplus-text-primary) !important;
+    }
+
+    @keyframes fade-in-line {
+      from {
+        opacity: 0.5;
+        color: var(--lyplus-text-secondary);
+      }
+      to {
+        opacity: 1;
+        color: var(--lyplus-lyrics-palette);
+      }
+    }
+
+    .lyrics-gap .lyrics-syllable {
       background-color: var(--lyplus-text-secondary);
       background-clip: unset;
     }
@@ -1753,7 +1775,8 @@ export class AmLyrics extends LitElement {
     const sanitizedEntries = rawLyrics.filter((item: any) => Boolean(item));
     const lines: LyricsLine[] = [];
 
-    const isLineType = payload.type === 'Line';
+    // If type is 'Line', we revert to line-by-line highlighting by skipping syllabus parsing
+    const isLineType = payload.type === 'Line' || payload.type === 'line';
 
     // Convert metadata.agents to alignment map
     const agents = payload.metadata?.agents ?? {};
@@ -1835,6 +1858,7 @@ export class AmLyrics extends LitElement {
           part: false,
           timestamp: lineStart,
           endtime: lineEnd || lineStart,
+          lineSynced: isLineType, // Mark as line-synced
         });
       }
 
@@ -3056,6 +3080,12 @@ export class AmLyrics extends LitElement {
         wipeAnimation = isRTL ? 'wipe-rtl' : 'wipe';
       }
 
+      if (syllable.classList.contains('line-synced')) {
+        // If line-synced, just add the class for CSS animation, or ensure valid state
+        // The CSS rule .lyrics-syllable.line-synced handles the fade
+        return;
+      }
+
       const currentWipeAnimation = isGap ? 'fade-gap' : wipeAnimation;
       const syllableAnimation = `${currentWipeAnimation} ${visualDuration}ms ${isGap ? 'ease-out' : 'linear'} forwards`;
       // eslint-disable-next-line no-param-reassign
@@ -3547,7 +3577,9 @@ export class AmLyrics extends LitElement {
                 return html`<span class="lyrics-word">
                   <span class="lyrics-syllable-wrap">
                     <span
-                      class="lyrics-syllable"
+                      class="lyrics-syllable ${syllable.lineSynced
+                        ? 'line-synced'
+                        : ''}"
                       data-start-time="${startTimeMs}"
                       data-end-time="${endTimeMs}"
                       data-duration="${durationMs}"
@@ -3592,12 +3624,14 @@ export class AmLyrics extends LitElement {
             const romanizedText =
               this.showRomanization && syllable.romanizedText
                 ? html`<span
-                    class="lyrics-syllable transliteration"
+                    class="lyrics-syllable transliteration ${syllable.lineSynced
+                      ? 'line-synced'
+                      : ''}"
                     data-start-time="${startTimeMs}"
                     data-end-time="${endTimeMs}"
                     data-duration="${durationMs}"
                     data-syllable-index="0"
-                    data-wipe-ratio="1"
+                    data-wipe-ratio="0"
                     >${syllable.romanizedText}</span
                   >`
                 : '';
@@ -3676,7 +3710,9 @@ export class AmLyrics extends LitElement {
             >
               <span class="lyrics-syllable-wrap">
                 <span
-                  class="lyrics-syllable"
+                  class="lyrics-syllable ${syllable.lineSynced
+                    ? 'line-synced'
+                    : ''}"
                   data-start-time="${startTimeMs}"
                   data-end-time="${endTimeMs}"
                   data-duration="${durationMs}"
