@@ -17,10 +17,12 @@
 
     <style>
       body {
-        background: #fafafa; /* Any background works out of the box */
+        background: #333;
+        /* Any background works out of the box */
       }
     </style>
   </head>
+
   <body>
     <div>
       <input id="title-input" type="text" placeholder="Song title" />
@@ -35,38 +37,19 @@
     </div>
 
     <am-lyrics
-      song-title="小苹果"
-      song-artist="筷子兄弟"
+      song-title="Paradise"
+      song-artist="Coldplay"
       song-album=""
-      song-duration="213000"
+      song-duration=""
       query=""
       music-id=""
       isrc=""
       highlight-color="#f00"
-      hover-background-color="#e0e0e0"
+      hover-background-color="#0f0"
       font-family="'Inter', Arial, sans-serif"
       autoscroll
       interpolate="false"
     ></am-lyrics>
-    <!--
-  <am-lyrics
-    song-title="Uptown Funk"          // Preferred: provide title for LyricsPlus API
-    song-artist="Mark Ronson"         // Preferred: provide artist for LyricsPlus API
-    song-album="Uptown Special"       // Optional album metadata sent to LyricsPlus
-    song-duration="269000"            // Optional song duration (ms) sent to LyricsPlus
-    query="Uptown Funk Mark Ronson"   // Fallback search string for Apple Music backup API
-    music-id=""                       // Use this if you have a specific song ID from Apple Music (almost never)
-    isrc=""                           // To be used WITH a query, just to double check if it is correct
-    duration=""                       // Playback timer duration (component sync). See JS below
-    highlight-color="#000"            // Color of the highlighted words
-    hover-background-color="#f0f0f0"  // Color of the line when you hover over it
-    hide-source-footer="false"        // Controls whether the footer at the bottom is a larger one or a more compact GitHub link.
-    font-family="'Inter', sans-serif" // BYOF
-    autoscroll                        // Self-explanatory
-    interpolate                       // Whether to animate the progress of the words
-    @line-click=${handleLineClick}    // Event listener for line clicks to skip to that part of the song.
-  ></am-lyrics>
-  -->
 
     <button id="start-button">Start</button>
     <button id="reset-button">Reset</button>
