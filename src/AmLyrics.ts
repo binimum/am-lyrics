@@ -2,7 +2,7 @@ import { html, css, LitElement } from 'lit';
 import { property, state, query } from 'lit/decorators.js';
 import { GoogleService } from './GoogleService.js';
 
-const VERSION = '1.0.4';
+const VERSION = '1.0.5';
 const INSTRUMENTAL_THRESHOLD_MS = 7000; // Show dots for gaps >= 7s
 
 const KPOE_SERVERS = [
@@ -1426,6 +1426,9 @@ export class AmLyrics extends LitElement {
 
   private scrollAnimationTimeout?: ReturnType<typeof setTimeout>;
 
+  // Overlap scroll tracking: scroll every 2 lines when lines overlap consecutively
+  private consecutiveOverlapCount = 0;
+
   // Syllable animation tracking
   private lastActiveIndex = 0;
 
@@ -2055,7 +2058,7 @@ export class AmLyrics extends LitElement {
         !this.isClickSeeking &&
         this.lyrics
       ) {
-        const preScrollLeadMs = 0.5; // 0.5s lead time (adjusted from 1.5s)
+        const preScrollLeadMs = 500; // 500ms lead time
 
         // Condition: ONLY pre-scroll if no other lyric is currently playing.
         // If a lyric is playing, we must wait for it to finish (handled by updated()).
@@ -2159,11 +2162,27 @@ export class AmLyrics extends LitElement {
       // Use YouLyPlus-style scroll if we have a current primary line
       if (this.currentPrimaryActiveLine) {
         if (!wasAlreadyActive) {
+          // No overlap — scroll normally and reset counter
+          this.consecutiveOverlapCount = 0;
           this.scrollToActiveLineYouLy(this.currentPrimaryActiveLine);
         } else {
-          // Concurrent line already active, skipping scroll
+          // Overlapping line: increment counter and scroll every 2nd overlap
+          this.consecutiveOverlapCount += 1;
+          if (this.consecutiveOverlapCount >= 2) {
+            // Scroll to the latest (newest) active line
+            const latestIndex =
+              this.activeLineIndices[this.activeLineIndices.length - 1];
+            const latestLine = this.lyricsContainer?.querySelector(
+              `#lyrics-line-${latestIndex}`,
+            ) as HTMLElement;
+            if (latestLine) {
+              this.scrollToActiveLineYouLy(latestLine);
+            }
+            this.consecutiveOverlapCount = 0;
+          }
         }
       } else {
+        this.consecutiveOverlapCount = 0;
         this.scrollToActiveLine();
       }
     }
@@ -3551,23 +3570,13 @@ export class AmLyrics extends LitElement {
         const lineStartTime = line.text[0]?.timestamp || 0;
         const lineEndTime = line.text[line.text.length - 1]?.endtime || 0;
 
-        // Check for background vocals playing
-        const bgIsPlayingNow =
-          line.backgroundText && line.backgroundText.length > 0
-            ? line.backgroundText.some(
-                syl =>
-                  this.currentTime >= syl.timestamp &&
-                  this.currentTime <= syl.endtime,
-              )
-            : false;
-
-        const shouldShowBackground =
-          line.backgroundText &&
-          line.backgroundText.length > 0 &&
-          (isLineActive || bgIsPlayingNow);
+        // Always render background vocals in the DOM so the syllable cache
+        // includes them and the wipe effect applies correctly.
+        const hasBackground =
+          line.backgroundText && line.backgroundText.length > 0;
 
         // Create background vocals container
-        const backgroundVocalElement = shouldShowBackground
+        const backgroundVocalElement = hasBackground
           ? html`<p class="background-vocal-container">
               ${line.backgroundText!.map((syllable, syllableIndex) => {
                 const startTimeMs = syllable.timestamp;
@@ -3618,11 +3627,13 @@ export class AmLyrics extends LitElement {
               trimmedText.length <= 7 &&
               trimmedText.length > 0 &&
               durationMs >= 700 &&
-              durationMs >= trimmedText.length * 300;
+              durationMs >= trimmedText.length * 400;
 
-            // Optional romanization per syllable
+            // Optional romanization per syllable (hide if same as the original text)
             const romanizedText =
-              this.showRomanization && syllable.romanizedText
+              this.showRomanization &&
+              syllable.romanizedText &&
+              syllable.romanizedText.trim() !== syllable.text.trim()
                 ? html`<span
                     class="lyrics-syllable transliteration ${syllable.lineSynced
                       ? 'line-synced'
@@ -3727,18 +3738,27 @@ export class AmLyrics extends LitElement {
         </p>`;
 
         // Translation container (if enabled)
+        // Hide translation if it matches the original line text
+        const fullLineText = line.text
+          .map(s => s.text)
+          .join('')
+          .trim();
         const translationElement =
-          this.showTranslation && line.translation
+          this.showTranslation &&
+          line.translation &&
+          line.translation.trim() !== fullLineText
             ? html`<div class="lyrics-translation-container">
                 ${line.translation}
               </div>`
             : '';
 
         // Line-synced romanization (fallback if no word-level romanization)
+        // Hide if the romanized text matches the original line text
         const lineRomanizationElement =
           this.showRomanization &&
           line.romanizedText &&
-          !line.text.some(s => s.romanizedText)
+          !line.text.some(s => s.romanizedText) &&
+          line.romanizedText.trim() !== fullLineText
             ? html`<div class="lyrics-romanization-container">
                 ${line.romanizedText}
               </div>`
