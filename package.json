@@ -3,7 +3,7 @@
   "description": "Web Component for Apple Music lyrics. Follows open-wc recommendations.",
   "license": "MPL-2.0",
   "author": "uimaxbai",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "type": "module",
   "main": "dist/src/index.js",
   "module": "dist/src/index.js",

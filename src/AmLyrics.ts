@@ -2,7 +2,7 @@ import { html, css, LitElement } from 'lit';
 import { property, state, query } from 'lit/decorators.js';
 import { GoogleService } from './GoogleService.js';
 
-const VERSION = '1.0.3';
+const VERSION = '1.0.4';
 const INSTRUMENTAL_THRESHOLD_MS = 7000; // Show dots for gaps >= 7s
 
 const KPOE_SERVERS = [
@@ -101,7 +101,7 @@ export class AmLyrics extends LitElement {
       --lyplus-gap-dot-margin: 0.08em;
 
       --lyplus-font-size-base: 32px;
-      --lyplus-font-size-base-grow: 30;
+      --lyplus-font-size-base-grow: 24.5;
       --lyplus-font-size-subtext: 0.6em;
 
       --lyplus-blur-amount: 0.07em;
@@ -3631,7 +3631,7 @@ export class AmLyrics extends LitElement {
                     data-end-time="${endTimeMs}"
                     data-duration="${durationMs}"
                     data-syllable-index="0"
-                    data-wipe-ratio="0"
+                    data-wipe-ratio="1"
                     >${syllable.romanizedText}</span
                   >`
                 : '';
