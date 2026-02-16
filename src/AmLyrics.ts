@@ -2,7 +2,7 @@ import { html, css, LitElement } from 'lit';
 import { property, state, query } from 'lit/decorators.js';
 import { GoogleService } from './GoogleService.js';
 
-const VERSION = '1.0.5';
+const VERSION = '1.0.6';
 const INSTRUMENTAL_THRESHOLD_MS = 7000; // Show dots for gaps >= 7s
 
 const KPOE_SERVERS = [
@@ -155,11 +155,12 @@ export class AmLyrics extends LitElement {
     }
 
     .lyrics-line.scroll-animate {
-      transition: none !important; /* Fixed: prevent conflict with scroll animation */
+      transition: none !important; /* Prevent conflict with scroll animation */
       animation-name: lyrics-scroll;
-      animation-duration: var(--scroll-duration, 400ms);
-      animation-timing-function: cubic-bezier(0.23, 1, 0.32, 1);
-      animation-fill-mode: forwards;
+      animation-duration: 400ms;
+      animation-timing-function: cubic-bezier(0.41, 0, 0.12, 0.99);
+      animation-fill-mode: both;
+      animation-delay: var(--lyrics-line-delay, 0ms);
     }
 
     .lyrics-container.user-scrolling .lyrics-line {
@@ -189,14 +190,6 @@ export class AmLyrics extends LitElement {
       overflow-wrap: break-word;
       mix-blend-mode: lighten;
       border-radius: var(--lyplus-border-radius-base);
-    }
-
-    .lyrics-line.scroll-animate {
-      animation-name: lyrics-scroll;
-      animation-duration: 400ms;
-      animation-timing-function: cubic-bezier(0.41, 0, 0.12, 0.99);
-      animation-fill-mode: both;
-      animation-delay: var(--lyrics-line-delay, 0ms);
     }
 
     .lyrics-line:not(.scroll-animate) {
@@ -1051,7 +1044,8 @@ export class AmLyrics extends LitElement {
       }
     }
 
-    /* Scroll animation */
+    /* Scroll animation — class is removed and re-added (with a forced
+       reflow in between) to reliably restart the animation each time */
     @keyframes lyrics-scroll {
       from {
         transform: translateY(var(--scroll-delta)) translateZ(1px);
@@ -1356,19 +1350,14 @@ export class AmLyrics extends LitElement {
   @state()
   private lyrics?: LyricsLine[];
 
-  @state()
   private activeLineIndices: number[] = [];
 
-  @state()
   private activeMainWordIndices: Map<number, number> = new Map();
 
-  @state()
   private activeBackgroundWordIndices: Map<number, number> = new Map();
 
-  @state()
   private mainWordProgress: Map<number, number> = new Map();
 
-  @state()
   private backgroundWordProgress: Map<number, number> = new Map();
 
   @state()
@@ -1425,9 +1414,6 @@ export class AmLyrics extends LitElement {
   private scrollUnlockTimeout?: ReturnType<typeof setTimeout>;
 
   private scrollAnimationTimeout?: ReturnType<typeof setTimeout>;
-
-  // Overlap scroll tracking: scroll every 2 lines when lines overlap consecutively
-  private consecutiveOverlapCount = 0;
 
   // Syllable animation tracking
   private lastActiveIndex = 0;
@@ -1956,20 +1942,51 @@ export class AmLyrics extends LitElement {
     const linesChanged = !AmLyrics.arraysEqual(newActiveLines, oldActiveLines);
 
     if (linesChanged || timeDiff > 0.5) {
-      // Reset syllables from lines that are no longer active
+      // Imperatively manage 'active' class so that scroll-animate and other
+      // imperative classes are never clobbered.
       if (this.lyricsContainer) {
+        // Remove 'active' from lines that are no longer active
         for (const lineIndex of oldActiveLines) {
           if (!newActiveLines.includes(lineIndex)) {
             const lineElement = this.lyricsContainer.querySelector(
               `#lyrics-line-${lineIndex}`,
             ) as HTMLElement;
             if (lineElement) {
+              lineElement.classList.remove('active');
               AmLyrics.resetSyllables(lineElement);
+            }
+          }
+        }
+        // Add 'active' to newly active lines
+        for (const lineIndex of newActiveLines) {
+          if (!oldActiveLines.includes(lineIndex)) {
+            const lineElement = this.lyricsContainer.querySelector(
+              `#lyrics-line-${lineIndex}`,
+            ) as HTMLElement;
+            if (lineElement) {
+              lineElement.classList.add('active');
             }
           }
         }
       }
       this.startAnimationFromTime(newTime);
+
+      // Update position classes BEFORE scrolling so currentPrimaryActiveLine is current
+      if (this.lyricsContainer && this.activeLineIndices.length > 0) {
+        const primaryLineIndex = this.activeLineIndices[0];
+        const primaryLine = this.lyricsContainer.querySelector(
+          `#lyrics-line-${primaryLineIndex}`,
+        ) as HTMLElement;
+
+        if (primaryLine && primaryLine !== this.currentPrimaryActiveLine) {
+          this.lastPrimaryActiveLine = this.currentPrimaryActiveLine;
+          this.currentPrimaryActiveLine = primaryLine;
+          this.updatePositionClasses(primaryLine);
+        }
+      }
+
+      // Trigger scroll imperatively (was previously in updated() via @state)
+      this._handleActiveLineScroll(oldActiveLines);
     }
 
     // YouLyPlus-style syllable animation updates
@@ -2010,6 +2027,15 @@ export class AmLyrics extends LitElement {
           // Entering gap: remove any leftover exit state, add active
           gap.classList.remove('gap-exiting');
           gap.classList.add('active');
+          // Mark any dots whose time has already passed as finished
+          // (prevents skipping the first dot when lyrics load mid-gap)
+          const dotSyllables = gap.querySelectorAll('.lyrics-syllable');
+          dotSyllables.forEach(dot => {
+            const dotEnd = parseFloat(dot.getAttribute('data-end-time') || '0');
+            if (newTime > dotEnd) {
+              dot.classList.add('finished');
+            }
+          });
         } else if (shouldStartExiting) {
           // Exiting gap: keep visible while dots animate out
           gap.classList.add('gap-exiting');
@@ -2037,7 +2063,9 @@ export class AmLyrics extends LitElement {
       }
 
       // Update position classes for YouLyPlus blur/opacity effect
-      if (this.activeLineIndices.length > 0) {
+      // (only needed when lines didn't change — when they DID change,
+      // position classes are already updated above before scrolling)
+      if (!linesChanged && this.activeLineIndices.length > 0) {
         const primaryLineIndex = this.activeLineIndices[0];
         const primaryLine = this.lyricsContainer.querySelector(
           `#lyrics-line-${primaryLineIndex}`,
@@ -2088,6 +2116,19 @@ export class AmLyrics extends LitElement {
     if (changedProperties.has('lyrics')) {
       // Recalculate timing data for accurate animations whenever lyrics change
       this._updateCharTimingData();
+
+      // Apply 'active' classes imperatively after lyrics first render,
+      // since the template no longer binds the 'active' class (to avoid
+      // clobbering imperative scroll-animate classes on re-render).
+      if (this.lyricsContainer && this.lyrics) {
+        const activeLines = this.findActiveLineIndices(this.currentTime);
+        for (const lineIndex of activeLines) {
+          const lineEl = this.lyricsContainer.querySelector(
+            `#lyrics-line-${lineIndex}`,
+          ) as HTMLElement;
+          if (lineEl) lineEl.classList.add('active');
+        }
+      }
     }
 
     // Handle duration reset (-1 stops playback and resets currentTime to 0)
@@ -2140,51 +2181,46 @@ export class AmLyrics extends LitElement {
       // This block intentionally left empty — only here for backwards compat with
       // any subclasses that might check changedProperties
     }
+  }
 
+  /**
+   * Handle scrolling when active line indices change.
+   * Called imperatively from _onTimeChanged instead of from updated().
+   */
+  private _handleActiveLineScroll(oldActiveIndices: number[]): void {
     if (
-      this.autoScroll &&
-      !this.isUserScrolling &&
-      !this.isClickSeeking &&
-      changedProperties.has('activeLineIndices') &&
-      this.activeLineIndices.length > 0
+      !this.autoScroll ||
+      this.isUserScrolling ||
+      this.isClickSeeking ||
+      this.activeLineIndices.length === 0
     ) {
-      // Logic for concurrent lines:
-      // If the new primary line was ALREADY active (e.g. part of an overlap),
-      // don't scroll. We only want to scroll when we move to a fresh line/block.
-      const oldActiveIndices = changedProperties.get(
-        'activeLineIndices',
-      ) as number[];
-      const firstActiveIndex = this.activeLineIndices[0]; // Assuming sorted
+      return;
+    }
 
-      const wasAlreadyActive =
-        oldActiveIndices && oldActiveIndices.includes(firstActiveIndex);
+    // Determine what changed: did we gain new lines or just lose old ones?
+    const newlyAdded = this.activeLineIndices.filter(
+      idx => !oldActiveIndices.includes(idx),
+    );
 
-      // Use YouLyPlus-style scroll if we have a current primary line
-      if (this.currentPrimaryActiveLine) {
-        if (!wasAlreadyActive) {
-          // No overlap — scroll normally and reset counter
-          this.consecutiveOverlapCount = 0;
-          this.scrollToActiveLineYouLy(this.currentPrimaryActiveLine);
-        } else {
-          // Overlapping line: increment counter and scroll every 2nd overlap
-          this.consecutiveOverlapCount += 1;
-          if (this.consecutiveOverlapCount >= 2) {
-            // Scroll to the latest (newest) active line
-            const latestIndex =
-              this.activeLineIndices[this.activeLineIndices.length - 1];
-            const latestLine = this.lyricsContainer?.querySelector(
-              `#lyrics-line-${latestIndex}`,
-            ) as HTMLElement;
-            if (latestLine) {
-              this.scrollToActiveLineYouLy(latestLine);
-            }
-            this.consecutiveOverlapCount = 0;
-          }
-        }
-      } else {
-        this.consecutiveOverlapCount = 0;
-        this.scrollToActiveLine();
-      }
+    if (newlyAdded.length === 0) {
+      // Only lost lines (an overlap resolved) — don't scroll
+      return;
+    }
+
+    // New lines were added — scroll to the latest newly-added line.
+    // Previous overlap logic skipped every other line for songs with tiny
+    // timing overlaps between consecutive lines, causing a visible glitch.
+    const latestNewIndex = newlyAdded[newlyAdded.length - 1];
+    const targetLine = this.lyricsContainer?.querySelector(
+      `#lyrics-line-${latestNewIndex}`,
+    ) as HTMLElement;
+
+    if (targetLine) {
+      this.scrollToActiveLineYouLy(targetLine);
+    } else if (this.currentPrimaryActiveLine) {
+      this.scrollToActiveLineYouLy(this.currentPrimaryActiveLine);
+    } else {
+      this.scrollToActiveLine();
     }
   }
 
@@ -2543,8 +2579,10 @@ export class AmLyrics extends LitElement {
       const allLines = this.lyricsContainer.querySelectorAll('.lyrics-line');
       allLines.forEach(lineEl => {
         AmLyrics.resetSyllables(lineEl as HTMLElement);
-        // Remove scroll-animate class to stop any scroll animations
+        // Remove scroll-animate class and properties to stop any scroll animations
         lineEl.classList.remove('scroll-animate');
+        (lineEl as HTMLElement).style.removeProperty('--scroll-delta');
+        (lineEl as HTMLElement).style.removeProperty('--lyrics-line-delay');
       });
       // Ensure container state is clean
       this.lyricsContainer.classList.remove('wheel-scrolling');
@@ -2715,7 +2753,6 @@ export class AmLyrics extends LitElement {
 
   /**
    * Animate scroll with staggered delay for smooth YouLyPlus-style scrolling
-   * (Exact copy from YouLyPlus _animateScroll)
    */
   private animateScrollYouLy(newTranslateY: number, forceScroll = false): void {
     if (!this.lyricsContainer) return;
@@ -2747,27 +2784,6 @@ export class AmLyrics extends LitElement {
     }
 
     const { animatingLines } = this;
-    if (animatingLines.length > 0) {
-      for (let i = 0; i < animatingLines.length; i += 1) {
-        const line = animatingLines[i];
-        line.classList.remove('scroll-animate');
-        line.style.removeProperty('--scroll-delta');
-        line.style.removeProperty('--lyrics-line-delay');
-      }
-      animatingLines.length = 0;
-    }
-
-    // Cancel and replay existing scroll animations
-    const animations = this.lyricsContainer.getAnimations({ subtree: true });
-    for (const anim of animations) {
-      if (
-        (anim as Animation & { animationName?: string }).animationName ===
-        'lyrics-scroll'
-      ) {
-        anim.cancel();
-        anim.play();
-      }
-    }
 
     const targetTop = Math.max(0, -newTranslateY);
     // Always use actual scroll position - don't fall back to stale currentScrollOffset
@@ -2784,13 +2800,26 @@ export class AmLyrics extends LitElement {
     }
 
     if (forceScroll) {
+      // Clean up any lingering scroll animations before smooth scroll
+      for (const line of animatingLines) {
+        line.classList.remove('scroll-animate');
+        line.style.removeProperty('--scroll-delta');
+        line.style.removeProperty('--lyrics-line-delay');
+      }
+      animatingLines.length = 0;
       parent.scrollTo({ top: targetTop, behavior: 'smooth' });
       animState.isAnimating = false;
       animState.pendingUpdate = null;
       return;
     }
 
-    // Get cached lines for staggered animation
+    // --- Step 1: Remove scroll-animate from ALL previously animating lines ---
+    for (const line of animatingLines) {
+      line.classList.remove('scroll-animate');
+    }
+    animatingLines.length = 0;
+
+    // Get lines for staggered animation
     const lineElements = this.lyricsContainer.querySelectorAll('.lyrics-line');
     const lineArray = Array.from(lineElements) as HTMLElement[];
 
@@ -2805,8 +2834,8 @@ export class AmLyrics extends LitElement {
     if (referenceIndex === -1) return;
 
     const delayIncrement = 30;
-    const lookBehind = 5;
-    const lookAhead = 20;
+    const lookBehind = 10;
+    const lookAhead = 15;
     const len = lineArray.length;
 
     const start = Math.max(0, referenceIndex - lookBehind);
@@ -2814,6 +2843,9 @@ export class AmLyrics extends LitElement {
 
     let maxAnimationDuration = 0;
     let delayCounter = 0;
+
+    // --- Step 2: Set CSS custom properties on target lines ---
+    const newAnimatingLines: HTMLElement[] = [];
 
     for (let i = start; i < end; i += 1) {
       const line = lineArray[i];
@@ -2823,14 +2855,24 @@ export class AmLyrics extends LitElement {
 
       line.style.setProperty('--scroll-delta', `${delta}px`);
       line.style.setProperty('--lyrics-line-delay', `${delay}ms`);
-      line.classList.add('scroll-animate');
 
-      animatingLines.push(line);
+      newAnimatingLines.push(line);
 
       const lineDuration = 400 + delay;
       if (lineDuration > maxAnimationDuration) {
         maxAnimationDuration = lineDuration;
       }
+    }
+
+    // --- Step 3: Force reflow so the browser sees the class removal ---
+    // This guarantees the animation restarts reliably, unlike the
+    // CSS-variable-toggle approach which doesn't restart in all browsers.
+    parent.getBoundingClientRect(); // force synchronous reflow
+
+    // --- Step 4: Re-add scroll-animate class to start fresh animations ---
+    for (const line of newAnimatingLines) {
+      line.classList.add('scroll-animate');
+      animatingLines.push(line);
     }
 
     animState.isAnimating = true;
@@ -3563,7 +3605,6 @@ export class AmLyrics extends LitElement {
       );
 
       return this.lyrics.map((line, lineIndex) => {
-        const isLineActive = this.activeLineIndices.includes(lineIndex);
         const lineId = `lyrics-line-${lineIndex}`;
 
         // Calculate line timing
@@ -3575,13 +3616,30 @@ export class AmLyrics extends LitElement {
         const hasBackground =
           line.backgroundText && line.backgroundText.length > 0;
 
-        // Create background vocals container
+        // Create background vocals container (with romanization support)
         const backgroundVocalElement = hasBackground
           ? html`<p class="background-vocal-container">
               ${line.backgroundText!.map((syllable, syllableIndex) => {
                 const startTimeMs = syllable.timestamp;
                 const endTimeMs = syllable.endtime;
                 const durationMs = endTimeMs - startTimeMs;
+
+                const bgRomanizedText =
+                  this.showRomanization &&
+                  syllable.romanizedText &&
+                  syllable.romanizedText.trim() !== syllable.text.trim()
+                    ? html`<span
+                        class="lyrics-syllable transliteration ${syllable.lineSynced
+                          ? 'line-synced'
+                          : ''}"
+                        data-start-time="${startTimeMs}"
+                        data-end-time="${endTimeMs}"
+                        data-duration="${durationMs}"
+                        data-syllable-index="0"
+                        data-wipe-ratio="1"
+                        >${syllable.romanizedText}</span
+                      >`
+                    : '';
 
                 return html`<span class="lyrics-word">
                   <span class="lyrics-syllable-wrap">
@@ -3595,47 +3653,166 @@ export class AmLyrics extends LitElement {
                       data-syllable-index="${syllableIndex}"
                       >${syllable.text}</span
                     >
+                    ${bgRomanizedText}
                   </span>
                 </span>`;
               })}
             </p>`
           : '';
 
+        // Background vocals share the same line.translation and line.romanizedText
+        // as the main vocal, so we intentionally do NOT render a separate
+        // translation/romanization block for background — it would just duplicate
+        // the main line's text.
+
+        // Group syllables by word: when part=true, append to previous word group
+        const wordGroups: Syllable[][] = [];
+        for (const syllable of line.text) {
+          if (syllable.part && wordGroups.length > 0) {
+            // Continuation of previous word
+            wordGroups[wordGroups.length - 1].push(syllable);
+          } else {
+            // New word
+            wordGroups.push([syllable]);
+          }
+        }
+
         // Create main vocals using YouLyPlus syllable structure
         const mainVocalElement = html`<p class="main-vocal-container">
-          ${line.text.map(syllable => {
-            const startTimeMs = syllable.timestamp;
-            const endTimeMs = syllable.endtime;
-            const durationMs = endTimeMs - startTimeMs;
-            const text = syllable.text || '';
-            const trimmedText = text.trim();
+          ${wordGroups.map(group => {
+            // Compute combined text and timing for the whole word group
+            const groupText = group.map(s => s.text).join('');
+            const groupTrimmed = groupText.trim();
+            const groupStart = group[0].timestamp;
+            const groupEnd = group[group.length - 1].endtime;
+            const groupDuration = groupEnd - groupStart;
 
-            // YouLyPlus growable criteria: short words (<=7 chars), long duration (>=1000ms), not CJK, not RTL
+            // Check if ANY syllable in group is line-synced
+            const groupLineSynced = group.some(s => s.lineSynced);
+
+            // YouLyPlus growable criteria applied to the FULL word
             const isCJK =
               /[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]/.test(
-                trimmedText,
+                groupTrimmed,
               );
             const isRTL =
               /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\u0590-\u05FF]/.test(
-                trimmedText,
+                groupTrimmed,
               );
-            const hasHyphen = trimmedText.includes('-');
+            const hasHyphen = groupTrimmed.includes('-');
             const isGrowable =
               !isCJK &&
               !isRTL &&
               !hasHyphen &&
-              trimmedText.length <= 7 &&
-              trimmedText.length > 0 &&
-              durationMs >= 700 &&
-              durationMs >= trimmedText.length * 400;
+              groupTrimmed.length <= 7 &&
+              groupTrimmed.length > 0 &&
+              groupDuration >= 700 &&
+              groupDuration >= groupTrimmed.length * 400;
 
-            // Optional romanization per syllable (hide if same as the original text)
-            const romanizedText =
-              this.showRomanization &&
-              syllable.romanizedText &&
-              syllable.romanizedText.trim() !== syllable.text.trim()
-                ? html`<span
-                    class="lyrics-syllable transliteration ${syllable.lineSynced
+            // For single-syllable groups, use original logic
+            if (group.length === 1) {
+              const syllable = group[0];
+              const startTimeMs = syllable.timestamp;
+              const endTimeMs = syllable.endtime;
+              const durationMs = endTimeMs - startTimeMs;
+              const text = syllable.text || '';
+              const trimmedText = text.trim();
+
+              // Optional romanization per syllable (hide if same as the original text)
+              const romanizedText =
+                this.showRomanization &&
+                syllable.romanizedText &&
+                syllable.romanizedText.trim() !== syllable.text.trim()
+                  ? html`<span
+                      class="lyrics-syllable transliteration ${syllable.lineSynced
+                        ? 'line-synced'
+                        : ''}"
+                      data-start-time="${startTimeMs}"
+                      data-end-time="${endTimeMs}"
+                      data-duration="${durationMs}"
+                      data-syllable-index="0"
+                      data-wipe-ratio="1"
+                      >${syllable.romanizedText}</span
+                    >`
+                  : '';
+
+              // For growable words, wrap each character in a span with YouLyPlus applyGrowthStyles
+              const syllableContent = isGrowable
+                ? html`${text.split('').map((char, charIndex) => {
+                    if (char === ' ') {
+                      return ' ';
+                    }
+                    const numChars = trimmedText.length;
+                    const charStartPercent = charIndex / text.length;
+
+                    // YouLyPlus emphasisMetrics calculation
+                    const minDuration = 1000;
+                    const maxDuration = 5000;
+                    const easingPower = 3;
+                    const progress = Math.min(
+                      1,
+                      Math.max(
+                        0,
+                        (durationMs - minDuration) /
+                          (maxDuration - minDuration),
+                      ),
+                    );
+                    const easedProgress = progress ** easingPower;
+
+                    // Decay calculation for long/short words
+                    const isLongWord = numChars > 5;
+                    const isShortDuration = durationMs < 1500;
+                    let maxDecayRate = 0;
+                    if (isLongWord || isShortDuration) {
+                      let decayStrength = 0;
+                      if (isLongWord)
+                        decayStrength +=
+                          Math.min((numChars - 5) / 3, 1.0) * 0.4;
+                      if (isShortDuration)
+                        decayStrength +=
+                          Math.max(0, 1.0 - (durationMs - 1000) / 500) * 0.4;
+                      maxDecayRate = Math.min(decayStrength, 0.85);
+                    }
+
+                    // Per-character calculations (exact YouLyPlus logic)
+                    const positionInWord =
+                      numChars > 1 ? charIndex / (numChars - 1) : 0;
+                    const decayFactor = 1.0 - positionInWord * maxDecayRate;
+                    const charProgress = easedProgress * decayFactor;
+
+                    const baseGrowth = numChars <= 3 ? 0.07 : 0.05;
+                    const charMaxScale = 1.0 + baseGrowth + charProgress * 0.1;
+                    const charShadowIntensity = 0.4 + charProgress * 0.4;
+                    const normalizedGrowth = (charMaxScale - 1.0) / 0.13;
+                    const charTranslateYPeak = -normalizedGrowth * 6;
+
+                    // Horizontal offset (simplified - YouLyPlus uses actual text width measurement)
+                    const position = (charIndex + 0.5) / numChars;
+                    const horizontalOffset =
+                      (position - 0.5) * 2 * ((charMaxScale - 1.0) * 25);
+
+                    // MOVED TO DATA ATTRIBUTES and removed style attribute to avoid Lit conflict
+                    return html`<span
+                      class="char"
+                      data-char-index="${charIndex}"
+                      data-syllable-char-index="${charIndex}"
+                      data-wipe-start="${charStartPercent.toFixed(4)}"
+                      data-wipe-duration="${(1 / text.length).toFixed(4)}"
+                      data-horizontal-offset="${horizontalOffset.toFixed(2)}"
+                      data-max-scale="${charMaxScale.toFixed(3)}"
+                      data-shadow-intensity="${charShadowIntensity.toFixed(3)}"
+                      data-translate-y-peak="${charTranslateYPeak.toFixed(3)}"
+                      >${char}</span
+                    >`;
+                  })}`
+                : text;
+
+              return html`<span
+                class="lyrics-word ${isGrowable ? 'growable' : ''}"
+              >
+                <span class="lyrics-syllable-wrap">
+                  <span
+                    class="lyrics-syllable ${syllable.lineSynced
                       ? 'line-synced'
                       : ''}"
                     data-start-time="${startTimeMs}"
@@ -3643,96 +3820,50 @@ export class AmLyrics extends LitElement {
                     data-duration="${durationMs}"
                     data-syllable-index="0"
                     data-wipe-ratio="1"
-                    >${syllable.romanizedText}</span
-                  >`
-                : '';
+                    >${syllableContent}</span
+                  >
+                  ${romanizedText}
+                </span>
+              </span>`;
+            }
 
-            // For growable words, wrap each character in a span with YouLyPlus applyGrowthStyles
-            const syllableContent = isGrowable
-              ? html`${text.split('').map((char, charIndex) => {
-                  if (char === ' ') {
-                    return ' ';
-                  }
-                  const numChars = trimmedText.length;
-                  const charStartPercent = charIndex / text.length;
-
-                  // YouLyPlus emphasisMetrics calculation
-                  const minDuration = 1000;
-                  const maxDuration = 5000;
-                  const easingPower = 3;
-                  const progress = Math.min(
-                    1,
-                    Math.max(
-                      0,
-                      (durationMs - minDuration) / (maxDuration - minDuration),
-                    ),
-                  );
-                  const easedProgress = progress ** easingPower;
-
-                  // Decay calculation for long/short words
-                  const isLongWord = numChars > 5;
-                  const isShortDuration = durationMs < 1500;
-                  let maxDecayRate = 0;
-                  if (isLongWord || isShortDuration) {
-                    let decayStrength = 0;
-                    if (isLongWord)
-                      decayStrength += Math.min((numChars - 5) / 3, 1.0) * 0.4;
-                    if (isShortDuration)
-                      decayStrength +=
-                        Math.max(0, 1.0 - (durationMs - 1000) / 500) * 0.4;
-                    maxDecayRate = Math.min(decayStrength, 0.85);
-                  }
-
-                  // Per-character calculations (exact YouLyPlus logic)
-                  const positionInWord =
-                    numChars > 1 ? charIndex / (numChars - 1) : 0;
-                  const decayFactor = 1.0 - positionInWord * maxDecayRate;
-                  const charProgress = easedProgress * decayFactor;
-
-                  const baseGrowth = numChars <= 3 ? 0.07 : 0.05;
-                  const charMaxScale = 1.0 + baseGrowth + charProgress * 0.1;
-                  const charShadowIntensity = 0.4 + charProgress * 0.4;
-                  const normalizedGrowth = (charMaxScale - 1.0) / 0.13;
-                  const charTranslateYPeak = -normalizedGrowth * 6;
-
-                  // Horizontal offset (simplified - YouLyPlus uses actual text width measurement)
-                  const position = (charIndex + 0.5) / numChars;
-                  const horizontalOffset =
-                    (position - 0.5) * 2 * ((charMaxScale - 1.0) * 25);
-
-                  // MOVED TO DATA ATTRIBUTES and removed style attribute to avoid Lit conflict
-                  return html`<span
-                    class="char"
-                    data-char-index="${charIndex}"
-                    data-syllable-char-index="${charIndex}"
-                    data-wipe-start="${charStartPercent.toFixed(4)}"
-                    data-wipe-duration="${(1 / text.length).toFixed(4)}"
-                    data-horizontal-offset="${horizontalOffset.toFixed(2)}"
-                    data-max-scale="${charMaxScale.toFixed(3)}"
-                    data-shadow-intensity="${charShadowIntensity.toFixed(3)}"
-                    data-translate-y-peak="${charTranslateYPeak.toFixed(3)}"
-                    >${char}</span
-                  >`;
-                })}`
-              : text;
-
+            // Multi-syllable group (part=true): render all syllables inside one lyrics-word
             return html`<span
-              class="lyrics-word ${isGrowable ? 'growable' : ''}"
+              class="lyrics-word ${isGrowable ? 'growable' : ''} allow-break"
             >
-              <span class="lyrics-syllable-wrap">
-                <span
-                  class="lyrics-syllable ${syllable.lineSynced
-                    ? 'line-synced'
-                    : ''}"
-                  data-start-time="${startTimeMs}"
-                  data-end-time="${endTimeMs}"
-                  data-duration="${durationMs}"
-                  data-syllable-index="0"
-                  data-wipe-ratio="1"
-                  >${syllableContent}</span
-                >
-                ${romanizedText}
-              </span>
+              ${group.map(
+                (syllable, sylIdx) => html`
+                  <span class="lyrics-syllable-wrap">
+                    <span
+                      class="lyrics-syllable ${groupLineSynced
+                        ? 'line-synced'
+                        : ''}"
+                      data-start-time="${syllable.timestamp}"
+                      data-end-time="${syllable.endtime}"
+                      data-duration="${syllable.endtime - syllable.timestamp}"
+                      data-syllable-index="${sylIdx}"
+                      data-wipe-ratio="1"
+                      >${syllable.text}</span
+                    >
+                    ${this.showRomanization &&
+                    syllable.romanizedText &&
+                    syllable.romanizedText.trim() !== syllable.text.trim()
+                      ? html`<span
+                          class="lyrics-syllable transliteration ${groupLineSynced
+                            ? 'line-synced'
+                            : ''}"
+                          data-start-time="${syllable.timestamp}"
+                          data-end-time="${syllable.endtime}"
+                          data-duration="${syllable.endtime -
+                          syllable.timestamp}"
+                          data-syllable-index="0"
+                          data-wipe-ratio="1"
+                          >${syllable.romanizedText}</span
+                        >`
+                      : ''}
+                  </span>
+                `,
+              )}
             </span>`;
           })}
         </p>`;
@@ -3821,9 +3952,7 @@ export class AmLyrics extends LitElement {
           ${maybeInstrumentalBlock}
           <div
             id="${lineId}"
-            class="lyrics-line ${isLineActive
-              ? 'active'
-              : ''} ${line.alignment === 'end'
+            class="lyrics-line ${line.alignment === 'end'
               ? 'singer-right'
               : 'singer-left'}"
             data-start-time="${lineStartTime}"
