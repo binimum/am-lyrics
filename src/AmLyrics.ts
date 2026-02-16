@@ -80,9 +80,17 @@ export class AmLyrics extends LitElement {
        YOULYPLUS-INSPIRED STYLING - Design Tokens & Variables
        ========================================================================== */
     :host {
-      --lyplus-lyrics-palette: var(--am-lyrics-highlight-color, #ffffff);
+      --lyplus-lyrics-palette: var(
+        --am-lyrics-highlight-color,
+        var(--highlight-color, #ffffff)
+      );
       --lyplus-text-primary: var(--lyplus-lyrics-palette);
-      --lyplus-text-secondary: rgba(255, 255, 255, 0.35);
+      /* Use color-mix with the text color rather than just opacity so it adapts */
+      --lyplus-text-secondary: color-mix(
+        in srgb,
+        var(--lyplus-lyrics-palette),
+        transparent 45%
+      );
 
       --lyplus-padding-base: 1em;
       --lyplus-padding-line: 10px;
@@ -264,7 +272,7 @@ export class AmLyrics extends LitElement {
 
     @media (hover: hover) and (pointer: fine) {
       .lyrics-line:hover {
-        background: rgba(255, 255, 255, 0.13);
+        background: var(--hover-background-color, rgba(255, 255, 255, 0.13));
       }
     }
 
@@ -1035,7 +1043,10 @@ export class AmLyrics extends LitElement {
     @keyframes grow-dynamic {
       0% {
         transform: matrix3d(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1);
-        filter: drop-shadow(0 0 0 rgba(255, 255, 255, 0));
+        filter: drop-shadow(
+          0 0 0
+            color-mix(in srgb, var(--lyplus-lyrics-palette), transparent 100%)
+        );
       }
       25%,
       30% {
@@ -1061,12 +1072,20 @@ export class AmLyrics extends LitElement {
           1
         );
         filter: drop-shadow(
-          0 0 0.1em rgba(255, 255, 255, var(--shadow-intensity))
+          0 0 0.1em
+            color-mix(
+              in srgb,
+              var(--lyplus-lyrics-palette),
+              transparent calc((1 - var(--shadow-intensity, 1)) * 100%)
+            )
         );
       }
       100% {
         transform: translateY(-3.5%) translateZ(1px);
-        filter: drop-shadow(0 0 0 rgba(255, 255, 255, 0));
+        filter: drop-shadow(
+          0 0 0
+            color-mix(in srgb, var(--lyplus-lyrics-palette), transparent 100%)
+        );
       }
     }
 
@@ -1074,12 +1093,14 @@ export class AmLyrics extends LitElement {
       0%,
       100% {
         transform: scale3d(1.01, 1.01, 1.1) translateY(-0.05%);
-        text-shadow: 0 0 0 rgba(255, 255, 255, 0);
+        text-shadow: 0 0 0
+          color-mix(in srgb, var(--lyplus-lyrics-palette), transparent 100%);
       }
       30%,
       40% {
         transform: scale3d(1.1, 1.1, 1.1) translateY(-0.05%);
-        text-shadow: 0 0 0.3em rgba(255, 255, 255, 0.5);
+        text-shadow: 0 0 0.3em
+          color-mix(in srgb, var(--lyplus-lyrics-palette), transparent 50%);
       }
     }
 
@@ -1197,10 +1218,10 @@ export class AmLyrics extends LitElement {
   songDurationMs?: number;
 
   @property({ type: String, attribute: 'highlight-color' })
-  highlightColor = '#000';
+  highlightColor = '#ffffff';
 
   @property({ type: String, attribute: 'hover-background-color' })
-  hoverBackgroundColor = '#f0f0f0';
+  hoverBackgroundColor = 'rgba(255, 255, 255, 0.13)';
 
   @property({ type: String, attribute: 'font-family' })
   fontFamily?: string;
