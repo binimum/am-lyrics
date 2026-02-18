@@ -2,7 +2,7 @@ import { html, css, LitElement } from 'lit';
 import { property, state, query } from 'lit/decorators.js';
 import { GoogleService } from './GoogleService.js';
 
-const VERSION = '1.0.7';
+const VERSION = '1.0.8';
 const INSTRUMENTAL_THRESHOLD_MS = 7000; // Show dots for gaps >= 7s
 
 const KPOE_SERVERS = [
@@ -14,6 +14,20 @@ const KPOE_SERVERS = [
 ];
 const DEFAULT_KPOE_SOURCE_ORDER =
   'apple,lyricsplus,musixmatch,spotify,musixmatch-word';
+
+const TIDAL_SERVERS = [
+  'https://arran.monochrome.tf',
+  'https://api.monochrome.tf/',
+  'https://triton.squid.wtf',
+  'https://wolf.qqdl.site',
+  'https://maus.qqdl.site',
+  'https://vogel.qqdl.site',
+  'https://katze.qqdl.site',
+  'https://hund.qqdl.site',
+  'https://tidal.kinoplus.online',
+  'https://hifi-one.spotisaver.net',
+  'https://hifi-two.spotisaver.net',
+];
 
 interface Syllable {
   text: string;
@@ -1465,6 +1479,33 @@ export class AmLyrics extends LitElement {
         }
       }
 
+      // Fallback: Tidal
+      if (resolvedMetadata?.metadata) {
+        const tidalResult = await AmLyrics.fetchLyricsFromTidal(
+          resolvedMetadata.metadata,
+          resolvedMetadata.catalogIsrc,
+        );
+        if (tidalResult && tidalResult.lines.length > 0) {
+          this.lyrics = tidalResult.lines;
+          this.lyricsSource = 'Tidal';
+          await this.onLyricsLoaded();
+          return;
+        }
+      }
+
+      // Fallback: LRCLIB
+      if (resolvedMetadata?.metadata) {
+        const lrclibResult = await AmLyrics.fetchLyricsFromLrclib(
+          resolvedMetadata.metadata,
+        );
+        if (lrclibResult && lrclibResult.lines.length > 0) {
+          this.lyrics = lrclibResult.lines;
+          this.lyricsSource = 'LRCLIB';
+          await this.onLyricsLoaded();
+          return;
+        }
+      }
+
       this.lyrics = undefined;
       this.lyricsSource = null;
     } finally {
@@ -1745,6 +1786,241 @@ export class AmLyrics extends LitElement {
     }
 
     return fallbackResult;
+  }
+
+  /**
+   * Parse LRC subtitle format into LyricsLine[].
+   * Handles "[mm:ss.xx] text" lines.
+   */
+  private static parseLrcSubtitles(lrc: string): LyricsLine[] {
+    if (!lrc || typeof lrc !== 'string') return [];
+
+    const lines: LyricsLine[] = [];
+    const rawLines = lrc.split('\n');
+    const parsed: { timestamp: number; text: string }[] = [];
+
+    for (const raw of rawLines) {
+      const match = raw.match(/^\[(\d{1,3}):(\d{2})\.(\d{2,3})\]\s?(.*)$/);
+      if (!match) {
+        // Skip non-timestamped lines (headers like [ti:], [ar:], etc.)
+        // eslint-disable-next-line no-continue
+        continue;
+      }
+      const minutes = parseInt(match[1], 10);
+      const seconds = parseInt(match[2], 10);
+      let centiseconds = parseInt(match[3], 10);
+      // Handle both mm:ss.xx (centiseconds) and mm:ss.xxx (milliseconds)
+      if (match[3].length === 3) {
+        centiseconds = Math.round(centiseconds / 10);
+      }
+      const timestamp = (minutes * 60 + seconds) * 1000 + centiseconds * 10;
+      const text = match[4] || '';
+      parsed.push({ timestamp, text });
+    }
+
+    for (let i = 0; i < parsed.length; i += 1) {
+      const { timestamp, text } = parsed[i];
+      // Endtime is the start of the next line, or timestamp + 5s for the last line
+      const endtime =
+        i + 1 < parsed.length ? parsed[i + 1].timestamp : timestamp + 5000;
+
+      // Skip empty lines (instrumental gaps)
+      if (!text.trim()) {
+        // eslint-disable-next-line no-continue
+        continue;
+      }
+
+      const syllable: Syllable = {
+        text,
+        part: false,
+        timestamp,
+        endtime,
+        lineSynced: true,
+      };
+
+      lines.push({
+        text: [syllable],
+        background: false,
+        backgroundText: [],
+        oppositeTurn: false,
+        timestamp,
+        endtime,
+        isWordSynced: false,
+      });
+    }
+
+    return lines;
+  }
+
+  /**
+   * Fetch lyrics from Tidal API.
+   * Picks 2 random servers, tries search + lyrics on each.
+   */
+  private static async fetchLyricsFromTidal(
+    metadata: SongMetadata,
+    isrc?: string,
+  ): Promise<YouLyPlusLyricsResult | null> {
+    const title = metadata.title?.trim();
+    const artist = metadata.artist?.trim();
+
+    if (!title || !artist) return null;
+
+    // Pick 2 random unique servers
+    const shuffled = [...TIDAL_SERVERS].sort(() => Math.random() - 0.5);
+    const serversToTry = shuffled.slice(0, 2);
+
+    for (const base of serversToTry) {
+      try {
+        const normalizedBase = base.endsWith('/') ? base.slice(0, -1) : base;
+
+        // Step 1: Search for the track
+        const searchQuery = `${title} ${artist}`;
+        const searchParams = new URLSearchParams({ s: searchQuery });
+        // eslint-disable-next-line no-await-in-loop
+        const searchResponse = await fetch(
+          `${normalizedBase}/search/?${searchParams.toString()}`,
+        );
+
+        if (!searchResponse.ok) {
+          // eslint-disable-next-line no-continue
+          continue;
+        }
+
+        // eslint-disable-next-line no-await-in-loop
+        const searchData = await searchResponse.json();
+        const items = searchData?.data?.items;
+
+        if (!Array.isArray(items) || items.length === 0) {
+          // eslint-disable-next-line no-continue
+          continue;
+        }
+
+        // Find best match: prefer ISRC match, then first result
+        let bestTrack = items[0];
+        if (isrc) {
+          const isrcMatch = items.find(
+            (item: any) =>
+              item.isrc && item.isrc.toLowerCase() === isrc.toLowerCase(),
+          );
+          if (isrcMatch) {
+            bestTrack = isrcMatch;
+          }
+        }
+
+        const trackId = bestTrack?.id;
+        if (!trackId) {
+          // eslint-disable-next-line no-continue
+          continue;
+        }
+
+        // Step 2: Fetch lyrics
+        // eslint-disable-next-line no-await-in-loop
+        const lyricsResponse = await fetch(
+          `${normalizedBase}/lyrics/?id=${trackId}`,
+        );
+
+        if (!lyricsResponse.ok) {
+          // eslint-disable-next-line no-continue
+          continue;
+        }
+
+        // eslint-disable-next-line no-await-in-loop
+        const lyricsData = await lyricsResponse.json();
+        const subtitles = lyricsData?.lyrics?.subtitles;
+
+        if (subtitles && typeof subtitles === 'string') {
+          const lines = AmLyrics.parseLrcSubtitles(subtitles);
+          if (lines.length > 0) {
+            const provider = lyricsData?.lyrics?.lyricsProvider || 'Tidal';
+            return {
+              lines,
+              source: `Tidal (${provider})`,
+            };
+          }
+        }
+      } catch {
+        // Try next server
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Fetch lyrics from LRCLIB.
+   * Uses search endpoint, prefers synced lyrics.
+   */
+  private static async fetchLyricsFromLrclib(
+    metadata: SongMetadata,
+  ): Promise<YouLyPlusLyricsResult | null> {
+    const title = metadata.title?.trim();
+    const artist = metadata.artist?.trim();
+
+    if (!title || !artist) return null;
+
+    try {
+      const searchQuery = `${title} ${artist}`;
+      const params = new URLSearchParams({ q: searchQuery });
+      const response = await fetch(
+        `https://lrclib.net/api/search?${params.toString()}`,
+        {
+          headers: {
+            'User-Agent': `apple-music-web-components/${VERSION}`,
+          },
+        },
+      );
+
+      if (!response.ok) return null;
+
+      const results = await response.json();
+      if (!Array.isArray(results) || results.length === 0) return null;
+
+      // Prefer results with synced lyrics
+      const withSynced = results.find(
+        (r: any) => r.syncedLyrics && typeof r.syncedLyrics === 'string',
+      );
+      const bestMatch = withSynced || results[0];
+
+      // Try synced lyrics first
+      if (bestMatch.syncedLyrics) {
+        const lines = AmLyrics.parseLrcSubtitles(bestMatch.syncedLyrics);
+        if (lines.length > 0) {
+          return { lines, source: 'LRCLIB' };
+        }
+      }
+
+      // Fall back to plain lyrics (unsynced)
+      if (bestMatch.plainLyrics && typeof bestMatch.plainLyrics === 'string') {
+        const plainLines = bestMatch.plainLyrics
+          .split('\n')
+          .filter((l: string) => l.trim());
+        if (plainLines.length > 0) {
+          const lines: LyricsLine[] = plainLines.map(
+            (text: string): LyricsLine => ({
+              text: [
+                {
+                  text,
+                  part: false,
+                  timestamp: 0,
+                  endtime: 0,
+                },
+              ],
+              background: false,
+              backgroundText: [],
+              oppositeTurn: false,
+              timestamp: 0,
+              endtime: 0,
+              isWordSynced: false,
+            }),
+          );
+          return { lines, source: 'LRCLIB (unsynced)' };
+        }
+      }
+    } catch {
+      // LRCLIB fetch failed
+    }
+
+    return null;
   }
 
   private static convertKPoeLyrics(payload: any): LyricsLine[] | null {
@@ -3684,37 +3960,191 @@ export class AmLyrics extends LitElement {
           }
         }
 
+        // Pre-compute isGrowable per "visual word": adjacent groups whose text
+        // doesn't end with whitespace form one visual word (e.g. "a"+"live" = "alive").
+        // We evaluate growable on the combined text/duration, then propagate
+        // the result to each individual group so it renders through the
+        // single-syllable path (which supports char-level glow).
+        const groupGrowable: boolean[] = new Array(wordGroups.length).fill(
+          false,
+        );
+        // Visual word info for growable char-level glow:
+        // Each group stores the combined visual word's text, duration, and
+        // the char offset of this group within the visual word.
+        const vwFullText: string[] = new Array(wordGroups.length).fill('');
+        const vwFullDuration: number[] = new Array(wordGroups.length).fill(0);
+        const vwCharOffset: number[] = new Array(wordGroups.length).fill(0);
+        const vwStartMs: number[] = new Array(wordGroups.length).fill(0);
+        const vwEndMs: number[] = new Array(wordGroups.length).fill(0);
+        {
+          let vwStart = 0;
+          while (vwStart < wordGroups.length) {
+            let vwEnd = vwStart;
+            while (vwEnd < wordGroups.length - 1) {
+              const grp = wordGroups[vwEnd];
+              const lastText = grp[grp.length - 1].text;
+              if (/\s$/.test(lastText)) break;
+              vwEnd += 1;
+            }
+
+            // Compute combined properties for this visual word
+            const combinedText = wordGroups
+              .slice(vwStart, vwEnd + 1)
+              .flatMap(g => g.map(s => s.text))
+              .join('')
+              .trim();
+            const combinedStart = wordGroups[vwStart][0].timestamp;
+            const lastGrp = wordGroups[vwEnd];
+            const combinedEnd = lastGrp[lastGrp.length - 1].endtime;
+            const combinedDuration = combinedEnd - combinedStart;
+
+            const isCJK =
+              /[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]/.test(
+                combinedText,
+              );
+            const isRTL =
+              /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\u0590-\u05FF]/.test(
+                combinedText,
+              );
+            const hasHyphen = combinedText.includes('-');
+            const isGrowableVW =
+              !isCJK &&
+              !isRTL &&
+              !hasHyphen &&
+              combinedText.length <= 7 &&
+              combinedText.length > 0 &&
+              combinedDuration >= 900 &&
+              combinedDuration >= combinedText.length * 300 &&
+              (combinedText.length >= 4 ||
+                combinedDuration / combinedText.length >= 600);
+
+            let charOff = 0;
+            for (let gi = vwStart; gi <= vwEnd; gi += 1) {
+              groupGrowable[gi] = isGrowableVW;
+              vwFullText[gi] = combinedText;
+              vwFullDuration[gi] = combinedDuration;
+              vwCharOffset[gi] = charOff;
+              vwStartMs[gi] = combinedStart;
+              vwEndMs[gi] = combinedEnd;
+              const grpText = wordGroups[gi].map(s => s.text).join('');
+              charOff += grpText.replace(/\s/g, '').length;
+            }
+
+            vwStart = vwEnd + 1;
+          }
+        }
+
         // Create main vocals using YouLyPlus syllable structure
         const mainVocalElement = html`<p class="main-vocal-container">
-          ${wordGroups.map(group => {
-            // Compute combined text and timing for the whole word group
-            const groupText = group.map(s => s.text).join('');
-            const groupTrimmed = groupText.trim();
-            const groupStart = group[0].timestamp;
-            const groupEnd = group[group.length - 1].endtime;
-            const groupDuration = groupEnd - groupStart;
+          ${wordGroups.map((group, groupIdx) => {
+            const isGrowable = groupGrowable[groupIdx];
+
+            // For growable visual words spanning multiple groups:
+            // skip continuation groups (rendered by the first group)
+            if (isGrowable && vwCharOffset[groupIdx] > 0) {
+              return '';
+            }
 
             // Check if ANY syllable in group is line-synced
             const groupLineSynced = group.some(s => s.lineSynced);
 
-            // YouLyPlus growable criteria applied to the FULL word
-            const isCJK =
-              /[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]/.test(
-                groupTrimmed,
-              );
-            const isRTL =
-              /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\u0590-\u05FF]/.test(
-                groupTrimmed,
-              );
-            const hasHyphen = groupTrimmed.includes('-');
-            const isGrowable =
-              !isCJK &&
-              !isRTL &&
-              !hasHyphen &&
-              groupTrimmed.length <= 7 &&
-              groupTrimmed.length > 0 &&
-              groupDuration >= 700 &&
-              groupDuration >= groupTrimmed.length * 400;
+            // For growable multi-group visual words, combine all text
+            // into one syllable so the wipe + glow animates as one unit
+            if (isGrowable && vwFullText[groupIdx].length > 0) {
+              const wordText = vwFullText[groupIdx];
+              const wordDuration = vwFullDuration[groupIdx];
+              const startTimeMs = vwStartMs[groupIdx];
+              const endTimeMs = vwEndMs[groupIdx];
+              const numChars = wordText.length;
+
+              // Collect all text from groups in this visual word
+              // by scanning forward while vwCharOffset is consecutive
+              let combinedRawText = '';
+              for (let gi = groupIdx; gi < wordGroups.length; gi += 1) {
+                if (gi > groupIdx && vwCharOffset[gi] === 0) break;
+                if (gi > groupIdx && !groupGrowable[gi]) break;
+                combinedRawText += wordGroups[gi].map(s => s.text).join('');
+              }
+
+              const syllableContent = html`${combinedRawText
+                .split('')
+                .map((char, charIndex) => {
+                  if (char === ' ') {
+                    return ' ';
+                  }
+                  const charStartPercent = charIndex / numChars;
+
+                  const minDuration = 1000;
+                  const maxDuration = 5000;
+                  const easingPower = 3;
+                  const progress = Math.min(
+                    1,
+                    Math.max(
+                      0,
+                      (wordDuration - minDuration) /
+                        (maxDuration - minDuration),
+                    ),
+                  );
+                  const easedProgress = progress ** easingPower;
+
+                  const isLongWord = numChars > 5;
+                  const isShortDuration = wordDuration < 1500;
+                  let maxDecayRate = 0;
+                  if (isLongWord || isShortDuration) {
+                    let decayStrength = 0;
+                    if (isLongWord)
+                      decayStrength += Math.min((numChars - 5) / 3, 1.0) * 0.4;
+                    if (isShortDuration)
+                      decayStrength +=
+                        Math.max(0, 1.0 - (wordDuration - 1000) / 500) * 0.4;
+                    maxDecayRate = Math.min(decayStrength, 0.85);
+                  }
+
+                  const positionInWord =
+                    numChars > 1 ? charIndex / (numChars - 1) : 0;
+                  const decayFactor = 1.0 - positionInWord * maxDecayRate;
+                  const charProgress = easedProgress * decayFactor;
+
+                  const baseGrowth = numChars <= 3 ? 0.07 : 0.05;
+                  const charMaxScale = 1.0 + baseGrowth + charProgress * 0.1;
+                  const charShadowIntensity = 0.4 + charProgress * 0.4;
+                  const normalizedGrowth = (charMaxScale - 1.0) / 0.13;
+                  const charTranslateYPeak = -normalizedGrowth * 6;
+
+                  const position = (charIndex + 0.5) / numChars;
+                  const horizontalOffset =
+                    (position - 0.5) * 2 * ((charMaxScale - 1.0) * 25);
+
+                  return html`<span
+                    class="char"
+                    data-char-index="${charIndex}"
+                    data-syllable-char-index="${charIndex}"
+                    data-wipe-start="${charStartPercent.toFixed(4)}"
+                    data-wipe-duration="${(1 / numChars).toFixed(4)}"
+                    data-horizontal-offset="${horizontalOffset.toFixed(2)}"
+                    data-max-scale="${charMaxScale.toFixed(3)}"
+                    data-shadow-intensity="${charShadowIntensity.toFixed(3)}"
+                    data-translate-y-peak="${charTranslateYPeak.toFixed(3)}"
+                    >${char}</span
+                  >`;
+                })}`;
+
+              return html`<span class="lyrics-word growable">
+                <span class="lyrics-syllable-wrap">
+                  <span
+                    class="lyrics-syllable ${groupLineSynced
+                      ? 'line-synced'
+                      : ''}"
+                    data-start-time="${startTimeMs}"
+                    data-end-time="${endTimeMs}"
+                    data-duration="${wordDuration}"
+                    data-syllable-index="0"
+                    data-wipe-ratio="1"
+                    >${syllableContent}</span
+                  >
+                </span>
+              </span>`;
+            }
 
             // For single-syllable groups, use original logic
             if (group.length === 1) {
@@ -3743,7 +4173,7 @@ export class AmLyrics extends LitElement {
                     >`
                   : '';
 
-              // For growable words, wrap each character in a span with YouLyPlus applyGrowthStyles
+              // For growable words (single-group visual word), use char glow
               const syllableContent = isGrowable
                 ? html`${text.split('').map((char, charIndex) => {
                     if (char === ' ') {
@@ -3752,7 +4182,6 @@ export class AmLyrics extends LitElement {
                     const numChars = trimmedText.length;
                     const charStartPercent = charIndex / text.length;
 
-                    // YouLyPlus emphasisMetrics calculation
                     const minDuration = 1000;
                     const maxDuration = 5000;
                     const easingPower = 3;
@@ -3766,7 +4195,6 @@ export class AmLyrics extends LitElement {
                     );
                     const easedProgress = progress ** easingPower;
 
-                    // Decay calculation for long/short words
                     const isLongWord = numChars > 5;
                     const isShortDuration = durationMs < 1500;
                     let maxDecayRate = 0;
@@ -3781,7 +4209,6 @@ export class AmLyrics extends LitElement {
                       maxDecayRate = Math.min(decayStrength, 0.85);
                     }
 
-                    // Per-character calculations (exact YouLyPlus logic)
                     const positionInWord =
                       numChars > 1 ? charIndex / (numChars - 1) : 0;
                     const decayFactor = 1.0 - positionInWord * maxDecayRate;
@@ -3793,12 +4220,10 @@ export class AmLyrics extends LitElement {
                     const normalizedGrowth = (charMaxScale - 1.0) / 0.13;
                     const charTranslateYPeak = -normalizedGrowth * 6;
 
-                    // Horizontal offset (simplified - YouLyPlus uses actual text width measurement)
                     const position = (charIndex + 0.5) / numChars;
                     const horizontalOffset =
                       (position - 0.5) * 2 * ((charMaxScale - 1.0) * 25);
 
-                    // MOVED TO DATA ATTRIBUTES and removed style attribute to avoid Lit conflict
                     return html`<span
                       class="char"
                       data-char-index="${charIndex}"
