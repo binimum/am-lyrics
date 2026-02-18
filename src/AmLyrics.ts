@@ -2,15 +2,15 @@ import { html, css, LitElement } from 'lit';
 import { property, state, query } from 'lit/decorators.js';
 import { GoogleService } from './GoogleService.js';
 
-const VERSION = '1.0.8';
+const VERSION = '1.0.9';
 const INSTRUMENTAL_THRESHOLD_MS = 7000; // Show dots for gaps >= 7s
 
 const KPOE_SERVERS = [
   'https://lyricsplus.binimum.org',
+  'https://lyricsplus.atomix.one',
+  'https://lyricsplus-seven.vercel.app',
   'https://lyricsplus.prjktla.workers.dev',
   'https://lyrics-plus-backend.vercel.app',
-  'https://lyricsplus.onrender.com',
-  'https://lyricsplus.prjktla.online',
 ];
 const DEFAULT_KPOE_SOURCE_ORDER =
   'apple,lyricsplus,musixmatch,spotify,musixmatch-word';
@@ -1745,7 +1745,10 @@ export class AmLyrics extends LitElement {
 
     let fallbackResult: YouLyPlusLyricsResult | null = null;
 
-    for (const base of KPOE_SERVERS) {
+    // Shuffle servers so we pick a random one first, with all others as fallback
+    const shuffledServers = [...KPOE_SERVERS].sort(() => Math.random() - 0.5);
+
+    for (const base of shuffledServers) {
       const normalizedBase = base.endsWith('/') ? base.slice(0, -1) : base;
       const url = `${normalizedBase}/v2/lyrics/get?${params.toString()}`;
 
