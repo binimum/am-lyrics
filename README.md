@@ -4,6 +4,8 @@
 
 This webcomponent follows the [open-wc](https://github.com/open-wc/open-wc) recommendation.
 
+This web component utilises the [lyricsplus](https://github.com/ibratabian17/YouLyPlus) API to fetch lyrics and the animations are heavily inspired by [YouLy+](https://github.com/ibratabian17/YouLyPlus).
+
 ## Installation
 
 ```bash
@@ -37,23 +39,23 @@ Or, just use the CDN.
 
 ## Properties & Attributes
 
-| Property/Attribute | Type | Default | Description |
-|-------------------|------|---------|-------------|
-| `query` | `string` | `undefined` | Search phrase that resolves metadata via LyricsPlus catalog (falls back to Apple Music search) |
-| `music-id` | `string` | `undefined` | Specific Apple Music song ID (served through the backup Apple endpoint) |
-| `isrc` | `string` | `undefined` | ISRC code to verify correct song match |
-| `song-title` | `string` | `undefined` | Preferred title for LyricsPlus (primary) provider |
-| `song-artist` | `string` | `undefined` | Preferred artist name for LyricsPlus provider |
-| `song-album` | `string` | `undefined` | Optional album name passed to LyricsPlus provider |
-| `song-duration` | `number` | `undefined` | Optional song duration in milliseconds sent to LyricsPlus |
-| `current-time` | `number` | `0` | Current playback time in milliseconds |
-| `duration` | `number` | `undefined` | Playback timer duration in milliseconds. **Set to `-1` to reset/stop playback** |
-| `highlight-color` | `string` | `"#000"` | Color for highlighted/active lyrics |
-| `hover-background-color` | `string` | `"#f0f0f0"` | Background color on line hover |
-| ~~`hide-source-footer`~~ | `boolean` | `false` | Hide/show the source attribution footer |
-| `font-family` | `string` | `undefined` | Custom font family for lyrics |
-| `autoscroll` | `boolean` | `true` | Enable automatic scrolling to active lyrics |
-| `interpolate` | `boolean` | `true` | Enable smooth word-by-word highlighting animation |
+| Property/Attribute       | Type      | Default     | Description                                                                                    |
+| ------------------------ | --------- | ----------- | ---------------------------------------------------------------------------------------------- |
+| `query`                  | `string`  | `undefined` | Search phrase that resolves metadata via LyricsPlus catalog (falls back to Apple Music search) |
+| `music-id`               | `string`  | `undefined` | Specific Apple Music song ID (served through the backup Apple endpoint)                        |
+| `isrc`                   | `string`  | `undefined` | ISRC code to verify correct song match                                                         |
+| `song-title`             | `string`  | `undefined` | Preferred title for LyricsPlus (primary) provider                                              |
+| `song-artist`            | `string`  | `undefined` | Preferred artist name for LyricsPlus provider                                                  |
+| `song-album`             | `string`  | `undefined` | Optional album name passed to LyricsPlus provider                                              |
+| `song-duration`          | `number`  | `undefined` | Optional song duration in milliseconds sent to LyricsPlus                                      |
+| `current-time`           | `number`  | `0`         | Current playback time in milliseconds                                                          |
+| `duration`               | `number`  | `undefined` | Playback timer duration in milliseconds. **Set to `-1` to reset/stop playback**                |
+| `highlight-color`        | `string`  | `"#000"`    | Color for highlighted/active lyrics                                                            |
+| `hover-background-color` | `string`  | `"#f0f0f0"` | Background color on line hover                                                                 |
+| ~~`hide-source-footer`~~ | `boolean` | `false`     | Hide/show the source attribution footer                                                        |
+| `font-family`            | `string`  | `undefined` | Custom font family for lyrics                                                                  |
+| `autoscroll`             | `boolean` | `true`      | Enable automatic scrolling to active lyrics                                                    |
+| `interpolate`            | `boolean` | `true`      | Enable smooth word-by-word highlighting animation                                              |
 
 ## CSS Custom Properties (CSS Variables)
 
@@ -63,17 +65,16 @@ You can customize the appearance using CSS custom properties:
 am-lyrics {
   /* Highlight color for active lyrics */
   --am-lyrics-highlight-color: #007aff;
-  
+
   /* Hover background color (fallback) */
   --hover-background-color: #f5f5f5;
-  
+
   /* Alternative highlight color (fallback) */
   --highlight-color: #000;
 }
 ```
 
 **Note**: The CSS variables take precedent over the set properties above.
-
 
 ## Lyrics providers
 
@@ -82,8 +83,7 @@ The component now only uses the LyricsPlus (KPoe) API that powers [YouLyPlus](ht
 1. Provide `song-title` and `song-artist` (plus optional `song-album`/`song-duration`) to request word-synced lyrics from LyricsPlus. A standalone `query` such as `"Bad Habit - Steve Lacy"` also works—the component looks up the metadata through LyricsPlus' `/v1/songlist/search` endpoint.
 2. If LyricsPlus cannot serve lyrics or metadata is missing, the component automatically falls back to the legacy Apple Music endpoint using the best available identifiers (`query`, `music-id`, `isrc`). Requests that rely solely on `music-id` are handled exclusively by this backup service because LyricsPlus does not support Apple IDs.
 
-The footer shows the active provider (e.g. “LyricsPlus (KPoe)” or “Apple Music”) so you always know which service responded. Supplying both metadata *and* a `query` gives the best results because the query remains available for the Apple Music backup.
-
+The footer shows the active provider (e.g. “LyricsPlus (KPoe)” or “Apple Music”) so you always know which service responded. Supplying both metadata _and_ a `query` gives the best results because the query remains available for the Apple Music backup.
 
 ## Events
 
@@ -92,7 +92,7 @@ The footer shows the active provider (e.g. “LyricsPlus (KPoe)” or “Apple M
 Fired when a user clicks on a lyrics line.
 
 ```javascript
-amLyrics.addEventListener('line-click', (event) => {
+amLyrics.addEventListener('line-click', event => {
   console.log('Seek to:', event.detail.timestamp); // timestamp in milliseconds
 });
 ```
@@ -295,7 +295,7 @@ You can synchronize the lyrics with an HTML `<audio>` element.
       });
 
       // Seek audio when a lyric line is clicked
-      amLyrics.addEventListener('line-click', (e) => {
+      amLyrics.addEventListener('line-click', e => {
         // The event detail contains the timestamp in milliseconds
         audioPlayer.currentTime = e.detail.timestamp / 1000;
         audioPlayer.play();

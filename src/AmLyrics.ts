@@ -2,7 +2,7 @@ import { html, css, LitElement } from 'lit';
 import { property, state, query } from 'lit/decorators.js';
 import { GoogleService } from './GoogleService.js';
 
-const VERSION = '1.0.6';
+const VERSION = '1.0.7';
 const INSTRUMENTAL_THRESHOLD_MS = 7000; // Show dots for gaps >= 7s
 
 const KPOE_SERVERS = [
@@ -600,8 +600,12 @@ export class AmLyrics extends LitElement {
 
     /* Line-synced lyrics should fade in instantly/quickly instead of wiping */
     .lyrics-syllable.line-synced {
-      animation: fade-in-line 0.2s ease-out forwards !important;
       background: transparent !important;
+      color: var(--lyplus-text-secondary) !important;
+    }
+
+    .lyrics-line.active .lyrics-syllable.line-synced {
+      animation: fade-in-line 0.2s ease-out forwards !important;
       color: var(--lyplus-text-primary) !important;
     }
 
@@ -1872,6 +1876,9 @@ export class AmLyrics extends LitElement {
         }
       }
 
+      // Extract translation from KPoe API if available
+      const translationText = entry.translation?.text;
+
       const lineResult: LyricsLine = {
         text: mainSyllables,
         background: backgroundSyllables.length > 0,
@@ -1886,6 +1893,7 @@ export class AmLyrics extends LitElement {
         alignment,
         songPart: entry.element?.songPart,
         romanizedText: romanizedTextFromPayload,
+        translation: translationText,
       };
 
       lines.push(lineResult);
@@ -2079,7 +2087,6 @@ export class AmLyrics extends LitElement {
       }
 
       // Pre-scroll: scroll to upcoming line ~0.5s before it starts
-      // This provides the "anticipatory scroll" requested by the user.
       if (
         this.autoScroll &&
         !this.isUserScrolling &&
