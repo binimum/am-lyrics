@@ -191,21 +191,21 @@ export class GoogleService {
         )
           return line;
 
-        // Extract text from syllables
-        const syllableTexts = line.text.map((s: any) => s.text);
-        const romanizedTexts = await this.romanizeTexts(syllableTexts);
+        // Get the entire line text to romanize together for context-aware pronunciation
+        const fullText = line.text.map((s: any) => s.text).join('');
 
-        const newSyllabus = line.text.map((s: any, index: number) => ({
+        // romanizeTexts expects an array of strings, so we pass an array of one
+        const [romanizedFullLine] = await this.romanizeTexts([fullText]);
+
+        const newSyllabus = line.text.map((s: any) => ({
           ...s,
-          romanizedText: romanizedTexts[index]
-            ? `${romanizedTexts[index]}`
-            : s.text,
+          romanizedText: s.romanizedText, // Keep any existing syllabus romanization if provided by API natively
         }));
 
         return {
           ...line,
           text: newSyllabus,
-          romanizedText: romanizedTexts.join(' '),
+          romanizedText: romanizedFullLine || '',
         };
       }),
     );

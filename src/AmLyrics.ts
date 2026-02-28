@@ -2,7 +2,7 @@ import { html, css, LitElement } from 'lit';
 import { property, state, query } from 'lit/decorators.js';
 import { GoogleService } from './GoogleService.js';
 
-const VERSION = '1.0.9';
+const VERSION = '1.1.0';
 const INSTRUMENTAL_THRESHOLD_MS = 7000; // Show dots for gaps >= 7s
 
 const KPOE_SERVERS = [
@@ -1467,7 +1467,12 @@ export class AmLyrics extends LitElement {
         !this.query;
 
       if (resolvedMetadata?.metadata && !isMusicIdOnlyRequest) {
+        const title = resolvedMetadata.metadata.title?.trim() || '';
+        const artist = resolvedMetadata.metadata.artist?.trim() || '';
+
         const youLyResult = await AmLyrics.fetchLyricsFromYouLyPlus(
+          title,
+          artist,
           resolvedMetadata.metadata,
         );
 
@@ -1719,14 +1724,11 @@ export class AmLyrics extends LitElement {
   }
 
   private static async fetchLyricsFromYouLyPlus(
-    metadata: SongMetadata,
+    title: string,
+    artist: string,
+    metadata: { durationMs?: number; album?: string } = {},
   ): Promise<YouLyPlusLyricsResult | null> {
-    const title = metadata.title?.trim();
-    const artist = metadata.artist?.trim();
-
-    if (!title || !artist) {
-      return null;
-    }
+    if (!title || !artist) return null;
 
     const params = new URLSearchParams({ title, artist });
 
@@ -1743,10 +1745,32 @@ export class AmLyrics extends LitElement {
 
     params.append('source', DEFAULT_KPOE_SOURCE_ORDER);
 
-    let fallbackResult: YouLyPlusLyricsResult | null = null;
+    const getRank = (sourceLabel: string, parsedLines: any[]): number => {
+      const lower = sourceLabel.toLowerCase();
+      const hasWordSync = parsedLines.some(
+        (line: any) =>
+          line.text && Array.isArray(line.text) && line.text.length > 1,
+      );
+
+      const isQQ = lower.includes('qq') || lower.includes('lyricsplus');
+
+      if (lower.includes('apple') && hasWordSync) return 1;
+      if (isQQ && hasWordSync) return 2;
+      if (lower.includes('musixmatch') && hasWordSync) return 3;
+      if (lower.includes('apple') && !hasWordSync) return 4;
+      if (isQQ && !hasWordSync) return 5;
+      if (lower.includes('musixmatch') && !hasWordSync) return 6;
+      return 10;
+    };
+
+    let bestFallbackResult: YouLyPlusLyricsResult | null = null;
+    let bestFallbackRank = 100;
 
     // Shuffle servers so we pick a random one first, with all others as fallback
-    const shuffledServers = [...KPOE_SERVERS].sort(() => Math.random() - 0.5);
+    // Limit to 2 servers to prevent unnecessary API spam when Apple lyrics are missing
+    const shuffledServers = [...KPOE_SERVERS]
+      .sort(() => Math.random() - 0.5)
+      .slice(0, 2);
 
     for (const base of shuffledServers) {
       const normalizedBase = base.endsWith('/') ? base.slice(0, -1) : base;
@@ -1773,22 +1797,56 @@ export class AmLyrics extends LitElement {
             payload?.metadata?.provider ||
             'LyricsPlus (KPoe)';
 
+          const rank = getRank(sourceLabel, lines);
+
           const result = { lines, source: sourceLabel };
 
           // If source is Apple, return immediately (best quality)
-          if (sourceLabel.toLowerCase() === 'apple') {
+          if (rank === 1) {
             return result;
           }
 
           // Otherwise, store as fallback if we don't have one yet
-          if (!fallbackResult) {
-            fallbackResult = result;
+          if (rank < bestFallbackRank) {
+            bestFallbackResult = result;
+            bestFallbackRank = rank;
           }
+
+          // Proxies are identical mirrors; if we got a valid response (even a fallback),
+          // there's no reason to query the next proxy because it will return the exact same fallback.
+          break;
         }
       }
     }
 
-    return fallbackResult;
+    // If we finished the 2-server check and STILL don't have Apple (1) or QQ (2),
+    // force an explicit query against lyricsplus.binimum.org looking for QQ
+    if (bestFallbackRank > 2) {
+      try {
+        const qqParams = new URLSearchParams(params);
+        qqParams.set('source', 'qq');
+        const url = `https://lyricsplus.binimum.org/v2/lyrics/get?${qqParams.toString()}`;
+        const response = await fetch(url);
+        if (response.ok) {
+          const payload = await response.json();
+          if (payload) {
+            const lines = AmLyrics.convertKPoeLyrics(payload);
+            const sourceLabel =
+              payload?.metadata?.source ||
+              payload?.metadata?.provider ||
+              'LyricsPlus (KPoe)';
+            const rank = getRank(sourceLabel, lines || []);
+            if (lines && lines.length > 0 && rank < bestFallbackRank) {
+              return { lines, source: sourceLabel };
+            }
+          }
+        }
+      } catch (error) {
+        // Explicit QQ fallback failed, ignore and proceed to return whatever we had
+      }
+    }
+
+    return bestFallbackResult;
   }
 
   /**
@@ -2068,14 +2126,15 @@ export class AmLyrics extends LitElement {
       });
 
       agentEntries.forEach(([agentKey, agentData]: [string, any]) => {
+        const mappedKey = agentData.alias || agentKey;
         if (agentData.type === 'group') {
-          singerAlignmentMap[agentKey] = 'start';
+          singerAlignmentMap[mappedKey] = 'start';
         } else if (agentData.type === 'other') {
-          singerAlignmentMap[agentKey] = 'end';
+          singerAlignmentMap[mappedKey] = 'end';
         } else if (agentData.type === 'person') {
           const personIndex = personIndexMap.get(agentKey);
           if (personIndex !== undefined) {
-            singerAlignmentMap[agentKey] =
+            singerAlignmentMap[mappedKey] =
               personIndex % 2 === 0 ? 'start' : 'end';
           }
         }
@@ -2633,7 +2692,25 @@ export class AmLyrics extends LitElement {
     if (!this.lyrics) return [];
     const activeLines: number[] = [];
     for (let i = 0; i < this.lyrics.length; i += 1) {
-      if (time >= this.lyrics[i].timestamp && time <= this.lyrics[i].endtime) {
+      const line = this.lyrics[i];
+      let effectiveEndTime = line.endtime;
+
+      // Extend the "active" highlight window to abut the next line,
+      // leaving a 500ms gap for breathing/scrolling
+      if (i < this.lyrics.length - 1) {
+        const nextLineStart = this.lyrics[i + 1].timestamp;
+        const gapDuration = nextLineStart - line.endtime;
+
+        // If the gap is large enough to trigger the breathing dots,
+        // DO NOT extend the highlight. The text should dim when the dots appear.
+        if (gapDuration < INSTRUMENTAL_THRESHOLD_MS) {
+          if (effectiveEndTime < nextLineStart) {
+            effectiveEndTime = Math.max(effectiveEndTime, nextLineStart - 500);
+          }
+        }
+      }
+
+      if (time >= line.timestamp && time <= effectiveEndTime) {
         activeLines.push(i);
       }
     }
