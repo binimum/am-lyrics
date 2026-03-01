@@ -1,8 +1,8 @@
-import { html, css, LitElement } from 'lit';
+import { html, css, LitElement, svg } from 'lit';
 import { property, state, query } from 'lit/decorators.js';
 import { GoogleService } from './GoogleService.js';
 
-const VERSION = '1.1.0';
+const VERSION = '1.1.1';
 const INSTRUMENTAL_THRESHOLD_MS = 7000; // Show dots for gaps >= 7s
 
 const KPOE_SERVERS = [
@@ -79,7 +79,7 @@ interface ParsedQueryMetadata {
 
 interface YouLyPlusLyricsResult {
   lines: LyricsLine[];
-  source?: string;
+  source: string;
 }
 
 interface ResolvedMetadata {
@@ -221,7 +221,8 @@ export class AmLyrics extends LitElement {
         color 0.7s;
     }
 
-    .lyrics-line.active .lyrics-line-container {
+    .lyrics-line.active .lyrics-line-container,
+    .lyrics-line.pre-active .lyrics-line-container {
       transform: scale3d(1.001, 1.001, 1);
       will-change: transform;
       transition:
@@ -278,24 +279,60 @@ export class AmLyrics extends LitElement {
       direction: rtl;
     }
 
+    /* --- Unsynced (Plain Text) Lyrics Overrides --- */
+    .lyrics-container.is-unsynced .lyrics-line {
+      opacity: 1 !important;
+      color: var(--lyplus-text-primary) !important;
+      filter: none !important;
+      transform: none !important;
+      cursor: default;
+    }
+
+    .lyrics-container.is-unsynced .lyrics-line-container {
+      transform: none !important;
+      background-color: transparent !important;
+    }
+
+    .lyrics-container.is-unsynced .lyrics-syllable {
+      color: var(--lyplus-text-primary) !important;
+      background-color: transparent !important;
+      -webkit-background-clip: unset !important;
+      background-clip: unset !important;
+      -webkit-text-fill-color: unset !important;
+      text-fill-color: unset !important;
+      text-shadow: none !important;
+      filter: none !important;
+      opacity: 1 !important;
+      transform: none !important;
+    }
+
     @media (hover: hover) and (pointer: fine) {
       .lyrics-line:hover {
         background: var(--hover-background-color, rgba(255, 255, 255, 0.13));
+      }
+      .lyrics-container.is-unsynced .lyrics-line:hover {
+        background: transparent !important;
       }
     }
 
     /* --- Blur Effect for Inactive Lines --- */
     .lyrics-container.blur-inactive-enabled:not(.not-focused)
-      .lyrics-line:not(.active):not(.lyrics-gap) {
+      .lyrics-line:not(.active):not(.pre-active):not(.lyrics-gap) {
       filter: blur(var(--lyplus-blur-amount));
     }
 
     .lyrics-container.blur-inactive-enabled:not(.not-focused)
-      .lyrics-line.post-active-line:not(.lyrics-gap):not(.active),
+      .lyrics-line.post-active-line:not(.lyrics-gap):not(.active):not(
+        .pre-active
+      ),
     .lyrics-container.blur-inactive-enabled:not(.not-focused)
-      .lyrics-line.next-active-line:not(.lyrics-gap):not(.active),
+      .lyrics-line.next-active-line:not(.lyrics-gap):not(.active):not(
+        .pre-active
+      ),
     .lyrics-container.blur-inactive-enabled:not(.not-focused)
-      .lyrics-line.lyrics-activest:not(.active):not(.lyrics-gap) {
+      .lyrics-line.lyrics-activest:not(.active):not(.lyrics-gap):not(
+        .pre-active
+      ) {
       filter: blur(var(--lyplus-blur-amount-near));
     }
 
@@ -303,6 +340,12 @@ export class AmLyrics extends LitElement {
     .lyrics-container.user-scrolling .lyrics-line {
       filter: none !important;
       opacity: 0.8 !important;
+    }
+
+    /* Unblur early for pre-active lines */
+    .lyrics-container.blur-inactive-enabled .lyrics-line.pre-active {
+      filter: blur(0px) !important;
+      opacity: var(--lyplus-primary-opacity);
     }
 
     /* ==========================================================================
@@ -736,6 +779,7 @@ export class AmLyrics extends LitElement {
       vertical-align: middle;
       display: inline-flex;
       align-items: center;
+      font-family: inherit;
     }
 
     .lyrics-header .download-button:hover {
@@ -786,6 +830,7 @@ export class AmLyrics extends LitElement {
       padding: 2px 5px;
       cursor: pointer;
       font-weight: normal;
+      font-family: inherit;
     }
 
     .format-select:hover {
@@ -1381,6 +1426,18 @@ export class AmLyrics extends LitElement {
   @state()
   private lyricsSource: string | null = null;
 
+  @state()
+  private availableSources: { lines: LyricsLine[]; source: string }[] = [];
+
+  @state()
+  private currentSourceIndex = 0;
+
+  @state()
+  private isFetchingAlternatives = false;
+
+  @state()
+  private hasFetchedAllProviders = false;
+
   private animationFrameId?: number;
 
   private mainWordAnimations: Map<
@@ -1457,6 +1514,10 @@ export class AmLyrics extends LitElement {
     this.isLoading = true;
     this.lyrics = undefined;
     this.lyricsSource = null;
+    this.availableSources = [];
+    this.currentSourceIndex = 0;
+    this.isFetchingAlternatives = false;
+    this.hasFetchedAllProviders = false;
     try {
       const resolvedMetadata = await this.resolveSongMetadata();
 
@@ -1466,49 +1527,63 @@ export class AmLyrics extends LitElement {
         !this.songArtist &&
         !this.query;
 
+      const collectedSources: { lines: LyricsLine[]; source: string }[] = [];
+
       if (resolvedMetadata?.metadata && !isMusicIdOnlyRequest) {
         const title = resolvedMetadata.metadata.title?.trim() || '';
         const artist = resolvedMetadata.metadata.artist?.trim() || '';
 
-        const youLyResult = await AmLyrics.fetchLyricsFromYouLyPlus(
+        const youLyResults = await AmLyrics.fetchLyricsFromYouLyPlus(
           title,
           artist,
           resolvedMetadata.metadata,
         );
 
-        if (youLyResult && youLyResult.lines.length > 0) {
-          this.lyrics = youLyResult.lines;
-          this.lyricsSource = youLyResult.source ?? 'LyricsPlus (KPoe)';
-          await this.onLyricsLoaded();
-          return;
+        if (youLyResults && youLyResults.length > 0) {
+          collectedSources.push(...youLyResults);
         }
       }
 
-      // Fallback: Tidal
-      if (resolvedMetadata?.metadata) {
+      if (collectedSources.length === 0 && resolvedMetadata?.metadata) {
         const tidalResult = await AmLyrics.fetchLyricsFromTidal(
           resolvedMetadata.metadata,
           resolvedMetadata.catalogIsrc,
         );
         if (tidalResult && tidalResult.lines.length > 0) {
-          this.lyrics = tidalResult.lines;
-          this.lyricsSource = 'Tidal';
-          await this.onLyricsLoaded();
-          return;
+          collectedSources.push({
+            lines: tidalResult.lines,
+            source: 'Tidal',
+          });
         }
       }
 
       // Fallback: LRCLIB
-      if (resolvedMetadata?.metadata) {
+      if (collectedSources.length === 0 && resolvedMetadata?.metadata) {
         const lrclibResult = await AmLyrics.fetchLyricsFromLrclib(
           resolvedMetadata.metadata,
         );
         if (lrclibResult && lrclibResult.lines.length > 0) {
-          this.lyrics = lrclibResult.lines;
-          this.lyricsSource = 'LRCLIB';
-          await this.onLyricsLoaded();
-          return;
+          collectedSources.push({
+            lines: lrclibResult.lines,
+            source: 'LRCLIB',
+          });
         }
+      }
+
+      this.hasFetchedAllProviders =
+        collectedSources.length === 0 ||
+        collectedSources.some(
+          s => s.source === 'LRCLIB' || s.source === 'Tidal',
+        );
+
+      if (collectedSources.length > 0) {
+        this.availableSources = AmLyrics.mergeAndSortSources(collectedSources);
+
+        this.currentSourceIndex = 0;
+        this.lyrics = this.availableSources[0].lines;
+        this.lyricsSource = this.availableSources[0].source;
+        await this.onLyricsLoaded();
+        return;
       }
 
       this.lyrics = undefined;
@@ -1544,6 +1619,139 @@ export class AmLyrics extends LitElement {
     }
     if (this.showTranslation) {
       await this.applyTranslation();
+    }
+  }
+
+  private static getRankForCollected(
+    sourceLabel: string,
+    parsedLines: any[],
+  ): number {
+    const lower = sourceLabel.toLowerCase();
+    const hasWordSync = parsedLines.some(
+      (line: any) =>
+        line.text && Array.isArray(line.text) && line.text.length > 1,
+    );
+    const isUnsynced =
+      parsedLines.length > 0 &&
+      parsedLines.every(
+        (line: any) => line.timestamp === 0 && line.endtime === 0,
+      );
+    const isQQ = lower.includes('qq') || lower.includes('lyricsplus');
+
+    if (lower.includes('apple') && hasWordSync) return 1;
+    if (isQQ && hasWordSync) return 2;
+    if (lower.includes('musixmatch') && hasWordSync) return 3;
+    if (lower.includes('tidal') && hasWordSync) return 4;
+    if (lower.includes('lrclib') && hasWordSync) return 5;
+
+    if (lower.includes('apple') && !hasWordSync && !isUnsynced) return 6;
+    if (isQQ && !hasWordSync && !isUnsynced) return 7;
+    if (lower.includes('musixmatch') && !hasWordSync && !isUnsynced) return 8;
+    if (lower.includes('tidal') && !hasWordSync && !isUnsynced) return 9;
+    if (lower.includes('lrclib') && !hasWordSync && !isUnsynced) return 10;
+
+    if (lower.includes('apple') && isUnsynced) return 11;
+    if (isQQ && isUnsynced) return 12;
+    if (lower.includes('musixmatch') && isUnsynced) return 13;
+    if (lower.includes('tidal') && isUnsynced) return 14;
+    if (lower.includes('lrclib') && isUnsynced) return 15;
+
+    return 20;
+  }
+
+  private static mergeAndSortSources(
+    collectedSources: { lines: LyricsLine[]; source: string }[],
+  ): { lines: LyricsLine[]; source: string }[] {
+    const uniqueSourcesMap = new Map<
+      string,
+      { lines: LyricsLine[]; source: string }
+    >();
+
+    for (const source of collectedSources) {
+      const normalizedSource = source.source
+        .toLowerCase()
+        .includes('lyricsplus')
+        ? 'QQ'
+        : source.source;
+
+      if (!uniqueSourcesMap.has(normalizedSource)) {
+        uniqueSourcesMap.set(normalizedSource, {
+          ...source,
+          source: normalizedSource,
+        });
+      }
+    }
+
+    return Array.from(uniqueSourcesMap.values()).sort(
+      (a, b) =>
+        AmLyrics.getRankForCollected(a.source, a.lines) -
+        AmLyrics.getRankForCollected(b.source, b.lines),
+    );
+  }
+
+  private async switchSource() {
+    if (this.isFetchingAlternatives) return;
+
+    if (!this.hasFetchedAllProviders) {
+      this.isFetchingAlternatives = true;
+      try {
+        const resolvedMetadata = await this.resolveSongMetadata();
+        if (resolvedMetadata?.metadata) {
+          const newSources: { lines: LyricsLine[]; source: string }[] = [];
+
+          // Try Tidal if not fetched
+          if (
+            !this.availableSources.some(s =>
+              s.source.toLowerCase().includes('tidal'),
+            )
+          ) {
+            const tidalResult = await AmLyrics.fetchLyricsFromTidal(
+              resolvedMetadata.metadata,
+              resolvedMetadata.catalogIsrc,
+            );
+            if (tidalResult && tidalResult.lines.length > 0) {
+              newSources.push({ lines: tidalResult.lines, source: 'Tidal' });
+            }
+          }
+
+          // Try LRCLIB if not fetched
+          if (
+            !this.availableSources.some(s =>
+              s.source.toLowerCase().includes('lrclib'),
+            )
+          ) {
+            const lrclibResult = await AmLyrics.fetchLyricsFromLrclib(
+              resolvedMetadata.metadata,
+            );
+            if (lrclibResult && lrclibResult.lines.length > 0) {
+              newSources.push({ lines: lrclibResult.lines, source: 'LRCLIB' });
+            }
+          }
+
+          if (newSources.length > 0) {
+            this.availableSources = AmLyrics.mergeAndSortSources([
+              ...this.availableSources,
+              ...newSources,
+            ]);
+            // Re-sync current index since sorting might shift elements
+            this.currentSourceIndex = this.availableSources.findIndex(
+              s => s.source === this.lyricsSource,
+            );
+            if (this.currentSourceIndex === -1) this.currentSourceIndex = 0;
+          }
+        }
+      } finally {
+        this.hasFetchedAllProviders = true;
+        this.isFetchingAlternatives = false;
+      }
+    }
+
+    if (this.availableSources.length > 1) {
+      this.currentSourceIndex =
+        (this.currentSourceIndex + 1) % this.availableSources.length;
+      this.lyrics = this.availableSources[this.currentSourceIndex].lines;
+      this.lyricsSource = this.availableSources[this.currentSourceIndex].source;
+      await this.onLyricsLoaded();
     }
   }
 
@@ -1727,8 +1935,8 @@ export class AmLyrics extends LitElement {
     title: string,
     artist: string,
     metadata: { durationMs?: number; album?: string } = {},
-  ): Promise<YouLyPlusLyricsResult | null> {
-    if (!title || !artist) return null;
+  ): Promise<YouLyPlusLyricsResult[]> {
+    if (!title || !artist) return [];
 
     const params = new URLSearchParams({ title, artist });
 
@@ -1752,19 +1960,30 @@ export class AmLyrics extends LitElement {
           line.text && Array.isArray(line.text) && line.text.length > 1,
       );
 
+      const isUnsynced =
+        parsedLines.length > 0 &&
+        parsedLines.every(
+          (line: any) => line.timestamp === 0 && line.endtime === 0,
+        );
+
       const isQQ = lower.includes('qq') || lower.includes('lyricsplus');
 
       if (lower.includes('apple') && hasWordSync) return 1;
       if (isQQ && hasWordSync) return 2;
       if (lower.includes('musixmatch') && hasWordSync) return 3;
-      if (lower.includes('apple') && !hasWordSync) return 4;
-      if (isQQ && !hasWordSync) return 5;
-      if (lower.includes('musixmatch') && !hasWordSync) return 6;
+
+      if (lower.includes('apple') && !hasWordSync && !isUnsynced) return 4;
+      if (isQQ && !hasWordSync && !isUnsynced) return 5;
+      if (lower.includes('musixmatch') && !hasWordSync && !isUnsynced) return 6;
+
+      if (lower.includes('apple') && isUnsynced) return 7;
+      if (isQQ && isUnsynced) return 8;
+      if (lower.includes('musixmatch') && isUnsynced) return 9;
+
       return 10;
     };
 
-    let bestFallbackResult: YouLyPlusLyricsResult | null = null;
-    let bestFallbackRank = 100;
+    const allResults: YouLyPlusLyricsResult[] = [];
 
     // Shuffle servers so we pick a random one first, with all others as fallback
     // Limit to 2 servers to prevent unnecessary API spam when Apple lyrics are missing
@@ -1798,30 +2017,25 @@ export class AmLyrics extends LitElement {
             'LyricsPlus (KPoe)';
 
           const rank = getRank(sourceLabel, lines);
-
           const result = { lines, source: sourceLabel };
 
-          // If source is Apple, return immediately (best quality)
+          allResults.push(result);
+
+          // If source is Apple synced, we have the best so we can just immediately break the sweep
           if (rank === 1) {
-            return result;
+            break;
           }
-
-          // Otherwise, store as fallback if we don't have one yet
-          if (rank < bestFallbackRank) {
-            bestFallbackResult = result;
-            bestFallbackRank = rank;
-          }
-
-          // Proxies are identical mirrors; if we got a valid response (even a fallback),
-          // there's no reason to query the next proxy because it will return the exact same fallback.
-          break;
         }
       }
     }
 
-    // If we finished the 2-server check and STILL don't have Apple (1) or QQ (2),
+    // If we haven't found a completely synced Apple/QQ result (rank 1 or 2) among the servers,
     // force an explicit query against lyricsplus.binimum.org looking for QQ
-    if (bestFallbackRank > 2) {
+    const hasHighRankResult = allResults.some(
+      r => getRank(r.source, r.lines) <= 2,
+    );
+
+    if (!hasHighRankResult) {
       try {
         const qqParams = new URLSearchParams(params);
         qqParams.set('source', 'qq');
@@ -1835,18 +2049,17 @@ export class AmLyrics extends LitElement {
               payload?.metadata?.source ||
               payload?.metadata?.provider ||
               'LyricsPlus (KPoe)';
-            const rank = getRank(sourceLabel, lines || []);
-            if (lines && lines.length > 0 && rank < bestFallbackRank) {
-              return { lines, source: sourceLabel };
+            if (lines && lines.length > 0) {
+              allResults.push({ lines, source: sourceLabel });
             }
           }
         }
       } catch (error) {
-        // Explicit QQ fallback failed, ignore and proceed to return whatever we had
+        // Explicit QQ fallback failed, ignore
       }
     }
 
-    return bestFallbackResult;
+    return allResults;
   }
 
   /**
@@ -2142,8 +2355,8 @@ export class AmLyrics extends LitElement {
     }
 
     for (const entry of sanitizedEntries) {
-      const start = Number(entry.time);
-      const duration = Number(entry.duration);
+      const start = AmLyrics.toMilliseconds(entry.time);
+      const duration = AmLyrics.toMilliseconds(entry.duration);
 
       // Determine alignment
       let alignment: 'start' | 'end' | undefined;
@@ -2167,7 +2380,14 @@ export class AmLyrics extends LitElement {
         for (const syl of syllabus) {
           const sylStart = AmLyrics.toMilliseconds(syl.time, lineStart);
           const sylDuration = AmLyrics.toMilliseconds(syl.duration);
-          const sylEnd = sylDuration > 0 ? sylStart + sylDuration : lineEnd;
+
+          // If there's only 1 syllable and duration is 0, it's likely a line-synced fallback.
+          // Otherwise, it's an instantaneous boundary (like a space or comma) and should not span the line.
+          const sylEnd =
+            sylDuration === 0 && syllabus.length === 1
+              ? lineEnd
+              : sylStart + sylDuration;
+
           const syllable: Syllable = {
             text: typeof syl.text === 'string' ? syl.text : '',
             part: Boolean(syl.part),
@@ -2311,6 +2531,7 @@ export class AmLyrics extends LitElement {
             ) as HTMLElement;
             if (lineElement) {
               lineElement.classList.add('active');
+              lineElement.classList.remove('pre-active'); // Cleanup pre-active when fully active
             }
           }
         }
@@ -2439,17 +2660,26 @@ export class AmLyrics extends LitElement {
           for (let i = 0; i < this.lyrics.length; i += 1) {
             const line = this.lyrics[i];
             const timeUntilStart = line.timestamp - newTime;
+
+            const nextLineEl = this.lyricsContainer.querySelector(
+              `#lyrics-line-${i}`,
+            ) as HTMLElement;
+
             if (timeUntilStart > 0 && timeUntilStart <= preScrollLeadMs) {
-              const nextLineEl = this.lyricsContainer.querySelector(
-                `#lyrics-line-${i}`,
-              ) as HTMLElement;
-              // Only trigger if we aren't already targeting this line
-              if (nextLineEl && nextLineEl !== this.currentPrimaryActiveLine) {
-                // We don't set currentPrimaryActiveLine here to avoid triggering
-                // styles, just the YouLy scroll.
-                this.scrollToActiveLineYouLy(nextLineEl);
+              // Time to pre-scroll and pre-activate!
+              if (nextLineEl) {
+                // Apply unblur & zoom effect ahead of lyric start
+                nextLineEl.classList.add('pre-active');
+
+                // Only trigger scroll if we aren't already targeting this line
+                if (nextLineEl !== this.currentPrimaryActiveLine) {
+                  this.scrollToActiveLineYouLy(nextLineEl);
+                }
               }
               break;
+            } else if (nextLineEl) {
+              // Ensure lines outside the pre-scroll window don't stay pre-active
+              nextLineEl.classList.remove('pre-active');
             }
           }
         }
@@ -3944,6 +4174,11 @@ export class AmLyrics extends LitElement {
 
     const sourceLabel = this.lyricsSource ?? 'Unavailable';
 
+    const isUnsynced =
+      this.lyrics && this.lyrics.length > 0
+        ? this.lyrics.every(l => l.timestamp === 0 && l.endtime === 0)
+        : false;
+
     const renderContent = () => {
       if (this.isLoading) {
         // Render stylized skeleton lines
@@ -4488,7 +4723,9 @@ export class AmLyrics extends LitElement {
 
     return html`
       <div
-        class="lyrics-container blur-inactive-enabled ${this.isUserScrolling
+        class="lyrics-container ${isUnsynced
+          ? 'is-unsynced'
+          : 'blur-inactive-enabled'} ${this.isUserScrolling
           ? 'user-scrolling'
           : ''}"
       >
@@ -4595,7 +4832,54 @@ export class AmLyrics extends LitElement {
           ? html`
               <footer class="lyrics-footer">
                 <div class="footer-content">
-                  <span class="source-info">Source: ${sourceLabel}</span>
+                  <span
+                    class="source-info"
+                    style="display: flex; align-items: center; gap: 8px;"
+                  >
+                    Source: ${sourceLabel}
+                    ${(this.availableSources &&
+                      this.availableSources.length > 1) ||
+                    !this.hasFetchedAllProviders
+                      ? html`
+                          <button
+                            class="download-button"
+                            title="Switch Lyrics Source"
+                            style="font-family: inherit; font-size: 11px; padding: 2px 6px; border-radius: 4px; border: 1px solid rgba(255, 255, 255, 0.2); background: transparent; cursor: pointer; color: #aaa; display: inline-flex; align-items: center;"
+                            @click=${this.switchSource}
+                            ?disabled=${this.isFetchingAlternatives}
+                          >
+                            <svg
+                              style="margin-right: 4px; ${this
+                                .isFetchingAlternatives
+                                ? 'animation: spin 1s linear infinite;'
+                                : ''}"
+                              xmlns="http://www.w3.org/2000/svg"
+                              width="12"
+                              height="12"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="2"
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                              class="lucide lucide-arrow-down-up-icon lucide-arrow-down-up"
+                            >
+                              ${this.isFetchingAlternatives
+                                ? svg`<path
+                                    d="M21 12a9 9 0 1 1-6.219-8.56"
+                                  ></path>`
+                                : svg`<path d="m3 16 4 4 4-4"></path
+                                    ><path d="M7 20V4"></path
+                                    ><path d="m21 8-4-4-4 4"></path
+                                    ><path d="M17 4v16"></path>`}
+                            </svg>
+                            ${this.isFetchingAlternatives
+                              ? 'Switching...'
+                              : 'Switch'}
+                          </button>
+                        `
+                      : ''}
+                  </span>
                   <span class="version-info">
                     v${VERSION} •
 
