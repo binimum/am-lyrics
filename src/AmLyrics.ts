@@ -2233,7 +2233,7 @@ export class AmLyrics extends LitElement {
     if (!title || !artist) return null;
 
     try {
-      const searchQuery = `${title} ${artist}`;
+      const searchQuery = `${artist} ${title}`;
       const params = new URLSearchParams({ q: searchQuery });
       const response = await fetch(
         `https://lrclib.net/api/search?${params.toString()}`,
