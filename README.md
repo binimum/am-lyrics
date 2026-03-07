@@ -2,7 +2,7 @@
 
 [![](https://data.jsdelivr.com/v1/package/npm/@uimaxbai/am-lyrics/badge)](https://www.jsdelivr.com/package/npm/@uimaxbai/am-lyrics)
 
-This webcomponent follows the [open-wc](https://github.com/open-wc/open-wc) recommendation.
+This webcomponent  follows the [open-wc](https://github.com/open-wc/open-wc) recommendation.
 
 This web component utilises the [lyricsplus](https://github.com/ibratabian17/YouLyPlus) API to fetch lyrics and the animations are heavily inspired by [YouLy+](https://github.com/ibratabian17/YouLyPlus).
 
