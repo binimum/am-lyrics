@@ -56,10 +56,17 @@ Or, just use the CDN.
 | `font-family`            | `string`  | `undefined` | Custom font family for lyrics                                                                  |
 | `autoscroll`             | `boolean` | `true`      | Enable automatic scrolling to active lyrics                                                    |
 | `interpolate`            | `boolean` | `true`      | Enable smooth word-by-word highlighting animation                                              |
+| `theme`                  | `"auto" \| "light" \| "dark"` | `"auto"` | Force a light or dark theme or respect system preference                                      |
 
 ## CSS Custom Properties (CSS Variables)
 
-You can customize the appearance using CSS custom properties:
+You can also set a background via `--am-lyrics-background` and the
+component automatically adjusts the hover color when the system prefers
+a light or dark color scheme.
+
+
+You can customize the appearance using CSS custom properties (and a
+new `theme` attribute makes it simple to respect dark/light mode):
 
 ```css
 am-lyrics {
@@ -80,6 +87,16 @@ am-lyrics {
 
 The component now only uses the LyricsPlus (KPoe) API that powers [YouLyPlus](https://github.com/ibratabian17/YouLyPlus).
 
+### Accessibility & Keyboard Navigation
+
+- Lyrics lines are focusable and can be activated with Enter/Space.
+- Use Arrow Up/Down to move between lines.
+- The current active line is announced via an off-screen `aria-live` region.
+- Buttons and controls include `aria-pressed`, `role="toolbar"`, and
+  other attributes for screen readers.
+- Loading state uses a status region and skeleton placeholders.
+
+
 1. Provide `song-title` and `song-artist` (plus optional `song-album`/`song-duration`) to request word-synced lyrics from LyricsPlus. A standalone `query` such as `"Bad Habit - Steve Lacy"` also works—the component looks up the metadata through LyricsPlus' `/v1/songlist/search` endpoint.
 2. If LyricsPlus cannot serve lyrics or metadata is missing, the component automatically falls back to the legacy Apple Music endpoint using the best available identifiers (`query`, `music-id`, `isrc`). Requests that rely solely on `music-id` are handled exclusively by this backup service because LyricsPlus does not support Apple IDs.
 
@@ -96,6 +113,12 @@ amLyrics.addEventListener('line-click', event => {
   console.log('Seek to:', event.detail.timestamp); // timestamp in milliseconds
 });
 ```
+
+### Loading & No-results States
+
+The component shows an accessible loading indicator while it fetches
+lyrics. If no lyrics are found you’ll see a message and the animation
+will stop.
 
 ### For React Users
 

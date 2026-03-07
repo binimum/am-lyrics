@@ -108,6 +108,19 @@ export class AmLyrics extends LitElement {
       );
 
       --lyplus-padding-base: 1em;
+      
+      /* default theme background is transparent; explicit modes override */
+    }
+
+    :host(.theme-dark) {
+      background-color: #000;
+      color: #fff;
+    }
+
+    :host(.theme-light) {
+      background-color: #fff;
+      color: #000;
+    }
       --lyplus-padding-line: 10px;
       --lyplus-padding-gap: 0.3em;
       --lyplus-border-radius-base: 0.6em;
@@ -128,11 +141,38 @@ export class AmLyrics extends LitElement {
       font-family:
         -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu,
         Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
-      background: transparent;
+      background: var(--am-lyrics-background, transparent);
       height: 100%;
       overflow: hidden;
       font-weight: bold;
       color: var(--lyplus-text-primary);
+    }
+
+    /* allow setting background via CSS variable for different themes */
+    @media (prefers-color-scheme: dark) {
+      :host {
+        --hover-background-color: var(--hover-background-color, rgba(255,255,255,0.13));
+      }
+    }
+    @media (prefers-color-scheme: light) {
+      :host {
+        --hover-background-color: var(--hover-background-color, rgba(0,0,0,0.1));
+      }
+    }
+
+    /* responsive tweaks */
+    @media (max-width: 600px) {
+      .lyrics-container {
+        padding: 10px;
+        padding-top: 60px;
+      }
+      .lyrics-header {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+      .download-controls {
+        margin-top: 8px;
+      }
     }
 
     /* ==========================================================================
@@ -1311,15 +1351,73 @@ export class AmLyrics extends LitElement {
   @property({ type: Boolean })
   interpolate = true;
 
+  /**
+   * Optional theme mode. "auto" respects prefers-color-scheme, otherwise
+   * "light"/"dark" can be used. This currently only influences the
+   * default hover/background variables, but it can be extended later.
+   */
+  @property({ type: String })
+  theme: 'auto' | 'light' | 'dark' = 'auto';
+
+
   @state()
   private showRomanization = false;
 
   @state()
   private showTranslation = false;
 
+  // offscreen element used to announce active lines for assistive tech
+  private ariaAnnouncer?: HTMLElement;
+
   private async toggleRomanization() {
     this.showRomanization = !this.showRomanization;
     await this.applyRomanization();
+  }
+
+  private async toggleTranslation() {
+    this.showTranslation = !this.showTranslation;
+    await this.applyTranslation();
+  }
+
+  private ensureAriaAnnouncer() {
+    if (!this.ariaAnnouncer) {
+      this.ariaAnnouncer = document.createElement('div');
+      this.ariaAnnouncer.setAttribute('aria-live', 'polite');
+      this.ariaAnnouncer.setAttribute('role', 'status');
+      this.ariaAnnouncer.style.position = 'absolute';
+      this.ariaAnnouncer.style.width = '1px';
+      this.ariaAnnouncer.style.height = '1px';
+      this.ariaAnnouncer.style.clip = 'rect(0 0 0 0)';
+      this.ariaAnnouncer.style.overflow = 'hidden';
+      this.appendChild(this.ariaAnnouncer);
+    }
+  }
+
+  private announceActiveLine(text: string) {
+    this.ensureAriaAnnouncer();
+    this.ariaAnnouncer!.textContent = text;
+  }
+
+  private handleLineKeyDown(e: KeyboardEvent, index: number) {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      const line = this.lyrics ? this.lyrics[index] : undefined;
+      if (line) {
+        this.handleLineClick(line);
+      }
+    } else if (e.key === 'ArrowDown') {
+      const next = this.cachedLyricsLines[index + 1];
+      if (next) {
+        next.focus();
+        e.preventDefault();
+      }
+    } else if (e.key === 'ArrowUp') {
+      const prev = this.cachedLyricsLines[index - 1];
+      if (prev) {
+        prev.focus();
+        e.preventDefault();
+      }
+    }
   }
 
   private async applyRomanization() {
@@ -1391,6 +1489,9 @@ export class AmLyrics extends LitElement {
 
   @property({ type: Number })
   duration?: number;
+
+  // list of line elements for keyboard navigation
+  private cachedLyricsLines: HTMLElement[] = [];
 
   private _currentTime = 0;
 
@@ -1598,6 +1699,11 @@ export class AmLyrics extends LitElement {
     this.activeMainWordIndices.clear();
     this.activeBackgroundWordIndices.clear();
     this.mainWordProgress.clear();
+    // update cache of line elements for keyboard nav
+    await this.updateComplete;
+    this.cachedLyricsLines = Array.from(
+      this.renderRoot.querySelectorAll('.lyrics-line'),
+    ) as HTMLElement[];
     this.backgroundWordProgress.clear();
     this.mainWordAnimations.clear();
     this.backgroundWordAnimations.clear();
@@ -2491,6 +2597,31 @@ export class AmLyrics extends LitElement {
     }
   }
 
+  protected updated(changedProps: Map<string, unknown>) {
+    super.updated(changedProps as any);
+    // keep cache of lines for keyboard nav
+    if (changedProps.has('lyrics')) {
+      this.cachedLyricsLines = Array.from(
+        this.renderRoot.querySelectorAll('.lyrics-line'),
+      ) as HTMLElement[];
+    }
+    if (changedProps.has('theme')) {
+      this.updateTheme();
+    }
+  }
+
+  private updateTheme() {
+    if (this.theme === 'dark') {
+      this.classList.add('theme-dark');
+      this.classList.remove('theme-light');
+    } else if (this.theme === 'light') {
+      this.classList.add('theme-light');
+      this.classList.remove('theme-dark');
+    } else {
+      this.classList.remove('theme-dark', 'theme-light');
+    }
+  }
+
   /**
    * Handle currentTime changes imperatively, bypassing Lit's render cycle.
    * This prevents the template from re-rendering on every frame, which would
@@ -2549,6 +2680,11 @@ export class AmLyrics extends LitElement {
           this.lastPrimaryActiveLine = this.currentPrimaryActiveLine;
           this.currentPrimaryActiveLine = primaryLine;
           this.updatePositionClasses(primaryLine);
+          // announce to assistive tech
+          const text = primaryLine.textContent?.trim() || '';
+          if (text) {
+            this.announceActiveLine(text);
+          }
         }
       }
 
@@ -4728,10 +4864,13 @@ export class AmLyrics extends LitElement {
           : 'blur-inactive-enabled'} ${this.isUserScrolling
           ? 'user-scrolling'
           : ''}"
+        role="region"
+        aria-live="polite"
+        aria-label="Lyrics"
       >
         ${!this.isLoading && this.lyrics && this.lyrics.length > 0
           ? html`
-              <div class="lyrics-header">
+              <div class="lyrics-header" role="toolbar" aria-label="Lyrics controls">
                 <div class="header-controls">
                   <button
                     class="download-button ${this.showRomanization
@@ -4739,6 +4878,7 @@ export class AmLyrics extends LitElement {
                       : ''}"
                     @click=${this.toggleRomanization}
                     title="Toggle Romanization"
+                    aria-pressed="${this.showRomanization}"
                   >
                     <svg
                       xmlns="http://www.w3.org/2000/svg"
@@ -4765,6 +4905,7 @@ export class AmLyrics extends LitElement {
                       : ''}"
                     @click=${this.toggleTranslation}
                     title="Toggle Translation"
+                    aria-pressed="${this.showTranslation}"
                   >
                     <svg
                       xmlns="http://www.w3.org/2000/svg"
@@ -4796,6 +4937,7 @@ export class AmLyrics extends LitElement {
                     }}
                     .value=${this.downloadFormat}
                     @click=${(e: Event) => e.stopPropagation()}
+                    aria-label="Download format"
                   >
                     <option value="auto">Auto</option>
                     <option value="lrc">LRC</option>
@@ -4826,6 +4968,14 @@ export class AmLyrics extends LitElement {
                 </div>
               </div>
             `
+          : ''}
+        ${this.isLoading && !this.lyrics
+          ? html`<div class="skeleton-area" role="status" aria-live="polite">
+              <p class="no-lyrics">Loading lyrics…</p>
+              ${Array.from({ length: 5 }).map(() =>
+                html`<div class="skeleton-line"></div>`,
+              )}
+            </div>`
           : ''}
         ${renderContent()}
         ${!this.isLoading
