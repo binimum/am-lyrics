@@ -28,6 +28,7 @@ const TIDAL_SERVERS = [
   'https://hifi-one.spotisaver.net',
   'https://hifi-two.spotisaver.net',
 ];
+const GENIUS_WORKER_URL = 'https://fetch-genius.samidy.workers.dev/';
 
 interface Syllable {
   text: string;
@@ -1570,10 +1571,25 @@ export class AmLyrics extends LitElement {
         }
       }
 
+      if (collectedSources.length === 0 && resolvedMetadata?.metadata) {
+        const geniusResult = await AmLyrics.fetchLyricsFromGenius(
+          resolvedMetadata.metadata,
+        );
+        if (geniusResult && geniusResult.lines.length > 0) {
+          collectedSources.push({
+            lines: geniusResult.lines,
+            source: 'Genius',
+          });
+        }
+      }
+
       this.hasFetchedAllProviders =
         collectedSources.length === 0 ||
         collectedSources.some(
-          s => s.source === 'LRCLIB' || s.source === 'Tidal',
+          s =>
+            s.source === 'LRCLIB' ||
+            s.source === 'Tidal' ||
+            s.source === 'Genius',
         );
 
       if (collectedSources.length > 0) {
@@ -1655,6 +1671,7 @@ export class AmLyrics extends LitElement {
     if (lower.includes('musixmatch') && isUnsynced) return 13;
     if (lower.includes('tidal') && isUnsynced) return 14;
     if (lower.includes('lrclib') && isUnsynced) return 15;
+    if (lower.includes('genius')) return 16;
 
     return 20;
   }
@@ -1725,6 +1742,19 @@ export class AmLyrics extends LitElement {
             );
             if (lrclibResult && lrclibResult.lines.length > 0) {
               newSources.push({ lines: lrclibResult.lines, source: 'LRCLIB' });
+            }
+          }
+
+          if (
+            !this.availableSources.some(s =>
+              s.source.toLowerCase().includes('genius'),
+            )
+          ) {
+            const geniusResult = await AmLyrics.fetchLyricsFromGenius(
+              resolvedMetadata.metadata,
+            );
+            if (geniusResult && geniusResult.lines.length > 0) {
+              newSources.push({ lines: geniusResult.lines, source: 'Genius' });
             }
           }
 
@@ -2293,6 +2323,54 @@ export class AmLyrics extends LitElement {
     } catch {
       // LRCLIB fetch failed
     }
+
+    return null;
+  }
+
+  private static async fetchLyricsFromGenius(
+    metadata: SongMetadata,
+  ): Promise<YouLyPlusLyricsResult | null> {
+    const title = metadata.title?.trim();
+    const artist = metadata.artist?.trim();
+
+    if (!title || !artist) return null;
+
+    try {
+      const params = new URLSearchParams({ title, artist });
+      const response = await fetch(`${GENIUS_WORKER_URL}?${params.toString()}`);
+
+      if (!response.ok) return null;
+      const data = await response.json();
+
+      if (data.lyrics) {
+        const plainLines = data.lyrics
+          .split('\n')
+          .map((l: string) => l.trim())
+          .filter((l: string) => l && !l.startsWith('['));
+
+        if (plainLines.length > 0) {
+          const lines: LyricsLine[] = plainLines.map(
+            (text: string): LyricsLine => ({
+              text: [
+                {
+                  text,
+                  part: false,
+                  timestamp: 0,
+                  endtime: 0,
+                },
+              ],
+              background: false,
+              backgroundText: [],
+              oppositeTurn: false,
+              timestamp: 0,
+              endtime: 0,
+              isWordSynced: false,
+            }),
+          );
+          return { lines, source: 'Genius' };
+        }
+      }
+    } catch {}
 
     return null;
   }
