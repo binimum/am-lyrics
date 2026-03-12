@@ -2,7 +2,7 @@ import { html, css, LitElement, svg } from 'lit';
 import { property, state, query } from 'lit/decorators.js';
 import { GoogleService } from './GoogleService.js';
 
-const VERSION = '1.1.1';
+const VERSION = '1.1.2';
 const INSTRUMENTAL_THRESHOLD_MS = 7000; // Show dots for gaps >= 7s
 
 const KPOE_SERVERS = [
@@ -2370,7 +2370,9 @@ export class AmLyrics extends LitElement {
           return { lines, source: 'Genius' };
         }
       }
-    } catch {}
+    } catch {
+      console.error('No Genius lyrics found');
+    }
 
     return null;
   }
