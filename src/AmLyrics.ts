@@ -1294,7 +1294,7 @@ export class AmLyrics extends LitElement {
   @property({ type: String, attribute: 'song-album' })
   songAlbum?: string;
 
-  @property({ type: String, attribute: 'song-duration' })
+  @property({ type: Number, attribute: 'song-duration' })
   songDurationMs?: number;
 
   @property({ type: String, attribute: 'highlight-color' })
