@@ -2333,7 +2333,7 @@ export class AmLyrics extends LitElement {
     const title = metadata.title?.trim();
     const artist = metadata.artist?.trim();
 
-    if (!title || !artist || !GENIUS_WORKER_URL) return null;
+    if (!title || !artist) return null;
 
     try {
       const params = new URLSearchParams({ title, artist });
