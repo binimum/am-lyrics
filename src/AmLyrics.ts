@@ -1,8 +1,8 @@
-import { html, css, LitElement, svg } from 'lit';
-import { property, state, query } from 'lit/decorators.js';
+import { css, html, LitElement, svg } from 'lit';
+import { property, query, state } from 'lit/decorators.js';
 import { GoogleService } from './GoogleService.js';
 
-const VERSION = '1.1.2';
+const VERSION = '1.1.3';
 const INSTRUMENTAL_THRESHOLD_MS = 7000; // Show dots for gaps >= 7s
 
 const KPOE_SERVERS = [
@@ -2015,6 +2015,86 @@ export class AmLyrics extends LitElement {
 
     const allResults: YouLyPlusLyricsResult[] = [];
 
+    // Try cache API first
+    try {
+      const cacheParams = new URLSearchParams({
+        track: title,
+        artist,
+      });
+      if (metadata.album) {
+        cacheParams.append('album', metadata.album);
+      }
+      if (metadata.durationMs && metadata.durationMs > 0) {
+        cacheParams.append(
+          'duration',
+          Math.round(metadata.durationMs / 1000).toString(),
+        );
+      }
+
+      const cacheUrl = `https://lyrics-api.binimum.org/?${cacheParams.toString()}`;
+      const cacheRes = await fetch(cacheUrl);
+      if (cacheRes.ok) {
+        const cacheData = await cacheRes.json();
+        if (cacheData.results && cacheData.results.length > 0) {
+          const result = cacheData.results[0];
+          if (result.timing_type === 'word' && result.lyricsUrl) {
+            const ttmlRes = await fetch(result.lyricsUrl);
+            if (ttmlRes.ok) {
+              const ttmlText = await ttmlRes.text();
+              const lines = AmLyrics.parseTTML(ttmlText);
+              if (lines && lines.length > 0) {
+                allResults.push({ lines, source: 'BiniLyrics' });
+                return allResults;
+              }
+            }
+          } else {
+            // Not word type, try QQ
+            const qqParams = new URLSearchParams(params);
+            qqParams.set('source', 'qq');
+            const qqUrl = `https://lyricsplus.binimum.org/v2/lyrics/get?${qqParams.toString()}`;
+            try {
+              const qqRes = await fetch(qqUrl);
+              if (qqRes.ok) {
+                const payload = await qqRes.json();
+                const lines = AmLyrics.convertKPoeLyrics(payload);
+                const hasWordSync = lines?.some(
+                  (line: any) =>
+                    line.text &&
+                    Array.isArray(line.text) &&
+                    line.text.length > 1,
+                );
+                if (lines && lines.length > 0 && hasWordSync) {
+                  allResults.push({ lines, source: 'QQ (Cache Fallback)' });
+                  return allResults;
+                }
+              }
+            } catch (qqError) {
+              // Ignore QQ fetch error
+            }
+
+            // If QQ fails or has no word sync, fall back to bini lyrics
+            if (result.lyricsUrl) {
+              const ttmlRes = await fetch(result.lyricsUrl);
+              if (ttmlRes.ok) {
+                const ttmlText = await ttmlRes.text();
+                const lines = AmLyrics.parseTTML(ttmlText);
+                if (lines && lines.length > 0) {
+                  allResults.push({
+                    lines,
+                    source: 'Apple Music (Cache Fallback)',
+                  });
+                  return allResults;
+                }
+              }
+            }
+          }
+        }
+      }
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error('Cache API failed', e);
+    }
+
     // Shuffle servers so we pick a random one first, with all others as fallback
     // Limit to 2 servers to prevent unnecessary API spam when Apple lyrics are missing
     const shuffledServers = [...KPOE_SERVERS]
@@ -2108,6 +2188,7 @@ export class AmLyrics extends LitElement {
       if (!match) {
         // Skip non-timestamped lines (headers like [ti:], [ar:], etc.)
         // eslint-disable-next-line no-continue
+        // eslint-disable-next-line no-continue
         continue;
       }
       const minutes = parseInt(match[1], 10);
@@ -2130,6 +2211,7 @@ export class AmLyrics extends LitElement {
 
       // Skip empty lines (instrumental gaps)
       if (!text.trim()) {
+        // eslint-disable-next-line no-continue
         // eslint-disable-next-line no-continue
         continue;
       }
@@ -2187,6 +2269,7 @@ export class AmLyrics extends LitElement {
 
         if (!searchResponse.ok) {
           // eslint-disable-next-line no-continue
+          // eslint-disable-next-line no-continue
           continue;
         }
 
@@ -2195,6 +2278,7 @@ export class AmLyrics extends LitElement {
         const items = searchData?.data?.items;
 
         if (!Array.isArray(items) || items.length === 0) {
+          // eslint-disable-next-line no-continue
           // eslint-disable-next-line no-continue
           continue;
         }
@@ -2214,6 +2298,7 @@ export class AmLyrics extends LitElement {
         const trackId = bestTrack?.id;
         if (!trackId) {
           // eslint-disable-next-line no-continue
+          // eslint-disable-next-line no-continue
           continue;
         }
 
@@ -2224,6 +2309,7 @@ export class AmLyrics extends LitElement {
         );
 
         if (!lyricsResponse.ok) {
+          // eslint-disable-next-line no-continue
           // eslint-disable-next-line no-continue
           continue;
         }
@@ -2371,10 +2457,186 @@ export class AmLyrics extends LitElement {
         }
       }
     } catch {
+      // eslint-disable-next-line no-console
       console.error('No Genius lyrics found');
     }
 
     return null;
+  }
+
+  private static parseTTML(ttmlString: string): LyricsLine[] | null {
+    try {
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(ttmlString, 'text/xml');
+
+      const translations: Record<string, string> = {};
+      const transliterations: Record<string, string> = {};
+      const agentMap: Record<string, string> = {};
+
+      const agents = doc.getElementsByTagName('ttm:agent');
+      for (let i = 0; i < agents.length; i += 1) {
+        const agent = agents[i];
+        const id = agent.getAttribute('xml:id');
+        const type = agent.getAttribute('type');
+        if (id && type) {
+          agentMap[id] = type;
+        }
+      }
+
+      const translationNodes = doc.getElementsByTagName('translation');
+      for (let i = 0; i < translationNodes.length; i += 1) {
+        const texts = translationNodes[i].getElementsByTagName('text');
+        for (let j = 0; j < texts.length; j += 1) {
+          const textNode = texts[j];
+          const key = textNode.getAttribute('for');
+          if (key && textNode.textContent) {
+            translations[key] = textNode.textContent;
+          }
+        }
+      }
+
+      const transliterationNodes = doc.getElementsByTagName('transliteration');
+      for (let i = 0; i < transliterationNodes.length; i += 1) {
+        const texts = transliterationNodes[i].getElementsByTagName('text');
+        for (let j = 0; j < texts.length; j += 1) {
+          const textNode = texts[j];
+          const key = textNode.getAttribute('for');
+          if (key && textNode.textContent) {
+            transliterations[key] = textNode.textContent
+              .trim()
+              .replace(/\s+/g, ' ');
+          }
+        }
+      }
+
+      const timeToMs = (timeStr: string | null): number => {
+        if (!timeStr) return 0;
+        const parts = timeStr.split(':');
+        let seconds = 0;
+        if (parts.length === 2) {
+          seconds = parseInt(parts[0], 10) * 60 + parseFloat(parts[1]);
+        } else if (parts.length === 3) {
+          seconds =
+            parseInt(parts[0], 10) * 3600 +
+            parseInt(parts[1], 10) * 60 +
+            parseFloat(parts[2]);
+        } else {
+          seconds = parseFloat(parts[0]);
+        }
+        return Math.round(seconds * 1000);
+      };
+
+      const lines: LyricsLine[] = [];
+      const pNodes = doc.getElementsByTagName('p');
+
+      for (let i = 0; i < pNodes.length; i += 1) {
+        const p = pNodes[i];
+        const key = p.getAttribute('itunes:key');
+        const beginMs = timeToMs(p.getAttribute('begin'));
+        const endMs = timeToMs(p.getAttribute('end'));
+        const agentId = p.getAttribute('ttm:agent');
+
+        let songPart: string | undefined;
+        if (p.parentNode && (p.parentNode as Element).tagName === 'div') {
+          songPart =
+            (p.parentNode as Element).getAttribute('itunes:songPart') ||
+            undefined;
+        }
+
+        const mainSyllables: Syllable[] = [];
+        const bgSyllables: Syllable[] = [];
+
+        const spans = p.getElementsByTagName('span');
+        if (spans.length > 0) {
+          for (let j = 0; j < spans.length; j += 1) {
+            const span = spans[j];
+
+            if (span.getAttribute('ttm:role') === 'x-bg') {
+              const bgInnerSpans = span.getElementsByTagName('span');
+              for (let k = 0; k < bgInnerSpans.length; k += 1) {
+                const bgSpan = bgInnerSpans[k];
+                let bgText = bgSpan.textContent || '';
+                if (
+                  k < bgInnerSpans.length - 1 &&
+                  !bgText.endsWith(' ') &&
+                  !bgText.endsWith('-') &&
+                  !/[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff]/.test(bgText)
+                ) {
+                  bgText += ' ';
+                }
+                bgSyllables.push({
+                  text: bgText,
+                  timestamp: timeToMs(bgSpan.getAttribute('begin')),
+                  endtime: timeToMs(bgSpan.getAttribute('end')),
+                  part: false,
+                });
+              }
+              // eslint-disable-next-line no-continue
+              continue;
+            }
+
+            if (
+              span.parentNode &&
+              (span.parentNode as Element).getAttribute?.('ttm:role') === 'x-bg'
+            ) {
+              // eslint-disable-next-line no-continue
+              continue;
+            }
+
+            let text = span.textContent || '';
+            if (
+              j < spans.length - 1 &&
+              !text.endsWith(' ') &&
+              !text.endsWith('-') &&
+              !/[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff]/.test(text)
+            ) {
+              text += ' ';
+            }
+            mainSyllables.push({
+              text,
+              timestamp: timeToMs(span.getAttribute('begin')),
+              endtime: timeToMs(span.getAttribute('end')),
+              part: false,
+            });
+          }
+        } else {
+          mainSyllables.push({
+            text: p.textContent?.trim() || '',
+            timestamp: beginMs,
+            endtime: endMs,
+            part: false,
+            lineSynced: true,
+          });
+        }
+
+        let alignment: 'start' | 'end' | undefined;
+        if (agentId && agentMap[agentId] === 'other') {
+          alignment = 'end';
+        }
+
+        lines.push({
+          text: mainSyllables,
+          background: bgSyllables.length > 0,
+          backgroundText: bgSyllables,
+          timestamp: beginMs,
+          endtime: endMs,
+          isWordSynced: spans.length > 0,
+          alignment,
+          songPart,
+          translation: key ? translations[key] : undefined,
+          romanizedText: key ? transliterations[key] : undefined,
+          oppositeTurn: agentId
+            ? agentMap[agentId] === 'other' || agentMap[agentId] === 'group'
+            : false,
+        });
+      }
+
+      return lines;
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error('Failed to parse TTML', e);
+      return null;
+    }
   }
 
   private static convertKPoeLyrics(payload: any): LyricsLine[] | null {
