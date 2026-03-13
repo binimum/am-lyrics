@@ -2464,6 +2464,72 @@ export class AmLyrics extends LitElement {
     return null;
   }
 
+  private static calculateLineAlignments(
+    lineSingers: (string | undefined)[],
+    agentTypes: Record<string, string>,
+  ): ('start' | 'end' | undefined)[] {
+    const lineSideAssignments = new Array(lineSingers.length).fill(undefined);
+    let currentSideIsLeft = true;
+    let lastPersonSingerId: string | null = null;
+    let rightCount = 0;
+    let totalCount = 0;
+
+    lineSingers.forEach((singerId, index) => {
+      let sideClass: 'start' | 'end' | undefined;
+
+      if (singerId) {
+        let type = agentTypes[singerId];
+        if (!type) {
+          if (singerId === 'v1000') {
+            type = 'group';
+          } else if (singerId === 'v2000') {
+            type = 'other';
+          } else {
+            type = 'person';
+          }
+        }
+
+        if (type === 'group') {
+          sideClass = 'start';
+        } else {
+          if (lastPersonSingerId === null) {
+            if (type === 'other') {
+              currentSideIsLeft = false;
+            } else {
+              currentSideIsLeft = true;
+            }
+          } else if (singerId !== lastPersonSingerId) {
+            currentSideIsLeft = !currentSideIsLeft;
+          }
+
+          sideClass = currentSideIsLeft ? 'start' : 'end';
+          lastPersonSingerId = singerId;
+        }
+      }
+
+      if (sideClass) {
+        totalCount += 1;
+        if (sideClass === 'end') rightCount += 1;
+      }
+
+      lineSideAssignments[index] = sideClass;
+    });
+
+    if (totalCount > 0 && Math.round((rightCount / totalCount) * 100) >= 85) {
+      const flip = (s: 'start' | 'end' | undefined) => {
+        if (s === 'start') return 'end';
+        if (s === 'end') return 'start';
+        return s;
+      };
+
+      for (let i = 0; i < lineSideAssignments.length; i += 1) {
+        lineSideAssignments[i] = flip(lineSideAssignments[i]);
+      }
+    }
+
+    return lineSideAssignments;
+  }
+
   private static parseTTML(ttmlString: string): LyricsLine[] | null {
     try {
       const parser = new DOMParser();
@@ -2529,12 +2595,20 @@ export class AmLyrics extends LitElement {
       const lines: LyricsLine[] = [];
       const pNodes = doc.getElementsByTagName('p');
 
+      const lineSingers: (string | undefined)[] = [];
+      for (let i = 0; i < pNodes.length; i += 1) {
+        lineSingers.push(pNodes[i].getAttribute('ttm:agent') || undefined);
+      }
+      const alignments = AmLyrics.calculateLineAlignments(
+        lineSingers,
+        agentMap,
+      );
+
       for (let i = 0; i < pNodes.length; i += 1) {
         const p = pNodes[i];
         const key = p.getAttribute('itunes:key');
         const beginMs = timeToMs(p.getAttribute('begin'));
         const endMs = timeToMs(p.getAttribute('end'));
-        const agentId = p.getAttribute('ttm:agent');
 
         let songPart: string | undefined;
         if (p.parentNode && (p.parentNode as Element).tagName === 'div') {
@@ -2556,11 +2630,12 @@ export class AmLyrics extends LitElement {
               for (let k = 0; k < bgInnerSpans.length; k += 1) {
                 const bgSpan = bgInnerSpans[k];
                 let bgText = bgSpan.textContent || '';
+                const nextNode = bgSpan.nextSibling;
                 if (
-                  k < bgInnerSpans.length - 1 &&
-                  !bgText.endsWith(' ') &&
-                  !bgText.endsWith('-') &&
-                  !/[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff]/.test(bgText)
+                  nextNode &&
+                  nextNode.nodeType === 3 &&
+                  /^\s/.test(nextNode.textContent || '') &&
+                  !bgText.endsWith(' ')
                 ) {
                   bgText += ' ';
                 }
@@ -2584,11 +2659,12 @@ export class AmLyrics extends LitElement {
             }
 
             let text = span.textContent || '';
+            const nextNode = span.nextSibling;
             if (
-              j < spans.length - 1 &&
-              !text.endsWith(' ') &&
-              !text.endsWith('-') &&
-              !/[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff]/.test(text)
+              nextNode &&
+              nextNode.nodeType === 3 &&
+              /^\s/.test(nextNode.textContent || '') &&
+              !text.endsWith(' ')
             ) {
               text += ' ';
             }
@@ -2609,10 +2685,7 @@ export class AmLyrics extends LitElement {
           });
         }
 
-        let alignment: 'start' | 'end' | undefined;
-        if (agentId && agentMap[agentId] === 'other') {
-          alignment = 'end';
-        }
+        const alignment = alignments[i];
 
         lines.push({
           text: mainSyllables,
@@ -2625,9 +2698,7 @@ export class AmLyrics extends LitElement {
           songPart,
           translation: key ? translations[key] : undefined,
           romanizedText: key ? transliterations[key] : undefined,
-          oppositeTurn: agentId
-            ? agentMap[agentId] === 'other' || agentMap[agentId] === 'group'
-            : false,
+          oppositeTurn: alignment === 'end',
         });
       }
 
@@ -2663,49 +2734,31 @@ export class AmLyrics extends LitElement {
     // If type is 'Line', we revert to line-by-line highlighting by skipping syllabus parsing
     const isLineType = payload.type === 'Line' || payload.type === 'line';
 
-    // Convert metadata.agents to alignment map
-    const agents = payload.metadata?.agents ?? {};
-    const agentEntries = Object.entries(agents);
-    const singerAlignmentMap: Record<string, 'start' | 'end'> = {};
-
-    if (agentEntries.length > 0) {
-      agentEntries.sort((a, b) => a[0].localeCompare(b[0]));
-
-      const personAgents = agentEntries.filter(
-        // eslint-disable-next-line @typescript-eslint/no-unused-vars
-        ([_, agentData]: [string, any]) => agentData.type === 'person',
+    // Convert metadata.agents to type map
+    const agentTypes: Record<string, string> = {};
+    if (payload.metadata?.agents) {
+      Object.entries(payload.metadata.agents).forEach(
+        ([key, agent]: [string, any]) => {
+          const mappedKey = agent.alias || key;
+          agentTypes[mappedKey] = agent.type;
+        },
       );
-      const personIndexMap = new Map();
-      personAgents.forEach(([agentKey], personIndex) => {
-        personIndexMap.set(agentKey, personIndex);
-      });
-
-      agentEntries.forEach(([agentKey, agentData]: [string, any]) => {
-        const mappedKey = agentData.alias || agentKey;
-        if (agentData.type === 'group') {
-          singerAlignmentMap[mappedKey] = 'start';
-        } else if (agentData.type === 'other') {
-          singerAlignmentMap[mappedKey] = 'end';
-        } else if (agentData.type === 'person') {
-          const personIndex = personIndexMap.get(agentKey);
-          if (personIndex !== undefined) {
-            singerAlignmentMap[mappedKey] =
-              personIndex % 2 === 0 ? 'start' : 'end';
-          }
-        }
-      });
     }
 
-    for (const entry of sanitizedEntries) {
+    const lineSingers = sanitizedEntries.map(
+      (entry: any) => entry.element?.singer,
+    );
+    const alignments = AmLyrics.calculateLineAlignments(
+      lineSingers,
+      agentTypes,
+    );
+
+    for (let i = 0; i < sanitizedEntries.length; i += 1) {
+      const entry = sanitizedEntries[i];
       const start = AmLyrics.toMilliseconds(entry.time);
       const duration = AmLyrics.toMilliseconds(entry.duration);
 
-      // Determine alignment
-      let alignment: 'start' | 'end' | undefined;
-      const singerId = entry.element?.singer;
-      if (singerId && singerAlignmentMap[singerId]) {
-        alignment = singerAlignmentMap[singerId];
-      }
+      const alignment = alignments[i];
       const lineText = typeof entry.text === 'string' ? entry.text : '';
       const lineStart = AmLyrics.toMilliseconds(entry.time);
       const lineDuration = AmLyrics.toMilliseconds(entry.duration);
@@ -2768,10 +2821,8 @@ export class AmLyrics extends LitElement {
           Array.isArray(transliteration.syllabus) &&
           transliteration.syllabus.length === mainSyllables.length
         ) {
-          transliteration.syllabus.forEach((s: any, i: number) => {
-            if (mainSyllables[i]) {
-              mainSyllables[i].romanizedText = s.text;
-            }
+          transliteration.syllabus.forEach((s: any, idx: number) => {
+            mainSyllables[idx].romanizedText = s.text;
           });
         }
       }
@@ -2783,10 +2834,12 @@ export class AmLyrics extends LitElement {
         text: mainSyllables,
         background: backgroundSyllables.length > 0,
         backgroundText: backgroundSyllables,
-        oppositeTurn: Array.isArray(entry.element)
-          ? entry.element.includes('opposite') ||
-            entry.element.includes('right')
-          : false,
+        oppositeTurn:
+          alignment === 'end' ||
+          (Array.isArray(entry.element)
+            ? entry.element.includes('opposite') ||
+              entry.element.includes('right')
+            : false),
         timestamp: lineStart,
         endtime: start + duration,
         isWordSynced: isLineType ? false : hasWordSync,
