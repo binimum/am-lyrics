@@ -2064,7 +2064,7 @@ export class AmLyrics extends LitElement {
                     line.text.length > 1,
                 );
                 if (lines && lines.length > 0 && hasWordSync) {
-                  allResults.push({ lines, source: 'QQ (Cache Fallback)' });
+                  allResults.push({ lines, source: 'QQ' });
                   return allResults;
                 }
               }
@@ -2081,7 +2081,7 @@ export class AmLyrics extends LitElement {
                 if (lines && lines.length > 0) {
                   allResults.push({
                     lines,
-                    source: 'Apple Music (Cache Fallback)',
+                    source: 'BiniLyrics',
                   });
                   return allResults;
                 }
