@@ -2989,15 +2989,36 @@ export class AmLyrics extends LitElement {
           // Entering gap: remove any leftover exit state, add active
           gap.classList.remove('gap-exiting');
           gap.classList.add('active');
-          // Mark any dots whose time has already passed as finished
-          // (prevents skipping the first dot when lyrics load mid-gap)
+          // Mark dots whose time has already passed as finished, and
+          // trigger highlight on the dot currently in its time window
+          // so the first dot always lights up even on late load.
           const dotSyllables = gap.querySelectorAll('.lyrics-syllable');
           dotSyllables.forEach(dot => {
+            const dotStart = parseFloat(
+              dot.getAttribute('data-start-time') || '0',
+            );
             const dotEnd = parseFloat(dot.getAttribute('data-end-time') || '0');
             if (newTime > dotEnd) {
               dot.classList.add('finished');
+              // Also ensure the highlight + animation fired so CSS state is correct
+              if (!dot.classList.contains('highlight')) {
+                AmLyrics.updateSyllableAnimation(dot as HTMLElement);
+              }
+            } else if (newTime >= dotStart && newTime <= dotEnd) {
+              // Currently within this dot's window — trigger its highlight
+              AmLyrics.updateSyllableAnimation(dot as HTMLElement);
             }
           });
+
+          // Scroll to the gap element so dots animate in with
+          // the staggered scroll rather than popping in.
+          if (
+            this.autoScroll &&
+            !this.isUserScrolling &&
+            !this.isClickSeeking
+          ) {
+            this.scrollToActiveLineYouLy(gap as HTMLElement);
+          }
         } else if (shouldStartExiting) {
           // Exiting gap: keep visible while dots animate out
           gap.classList.add('gap-exiting');
