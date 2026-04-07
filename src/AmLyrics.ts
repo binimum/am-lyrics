@@ -2,7 +2,7 @@ import { css, html, LitElement, svg } from 'lit';
 import { property, query, state } from 'lit/decorators.js';
 import { GoogleService } from './GoogleService.js';
 
-const VERSION = '1.1.5';
+const VERSION = '1.1.6';
 const INSTRUMENTAL_THRESHOLD_MS = 7000; // Show dots for gaps >= 7s
 
 const KPOE_SERVERS = [
@@ -1659,19 +1659,21 @@ export class AmLyrics extends LitElement {
     if (lower.includes('musixmatch') && hasWordSync) return 3;
     if (lower.includes('tidal') && hasWordSync) return 4;
     if (lower.includes('lrclib') && hasWordSync) return 5;
+    if (hasWordSync) return 6;
 
-    if (lower.includes('apple') && !hasWordSync && !isUnsynced) return 6;
-    if (isQQ && !hasWordSync && !isUnsynced) return 7;
-    if (lower.includes('musixmatch') && !hasWordSync && !isUnsynced) return 8;
-    if (lower.includes('tidal') && !hasWordSync && !isUnsynced) return 9;
-    if (lower.includes('lrclib') && !hasWordSync && !isUnsynced) return 10;
+    if (lower.includes('apple') && !hasWordSync && !isUnsynced) return 7;
+    if (isQQ && !hasWordSync && !isUnsynced) return 8;
+    if (lower.includes('musixmatch') && !hasWordSync && !isUnsynced) return 9;
+    if (lower.includes('tidal') && !hasWordSync && !isUnsynced) return 10;
+    if (lower.includes('lrclib') && !hasWordSync && !isUnsynced) return 11;
+    if (!hasWordSync && !isUnsynced) return 12;
 
-    if (lower.includes('apple') && isUnsynced) return 11;
-    if (isQQ && isUnsynced) return 12;
-    if (lower.includes('musixmatch') && isUnsynced) return 13;
-    if (lower.includes('tidal') && isUnsynced) return 14;
-    if (lower.includes('lrclib') && isUnsynced) return 15;
-    if (lower.includes('genius')) return 16;
+    if (lower.includes('apple') && isUnsynced) return 13;
+    if (isQQ && isUnsynced) return 14;
+    if (lower.includes('musixmatch') && isUnsynced) return 15;
+    if (lower.includes('tidal') && isUnsynced) return 16;
+    if (lower.includes('lrclib') && isUnsynced) return 17;
+    if (lower.includes('genius')) return 18;
 
     return 20;
   }
@@ -2001,16 +2003,18 @@ export class AmLyrics extends LitElement {
       if (lower.includes('apple') && hasWordSync) return 1;
       if (isQQ && hasWordSync) return 2;
       if (lower.includes('musixmatch') && hasWordSync) return 3;
+      if (hasWordSync) return 4;
 
-      if (lower.includes('apple') && !hasWordSync && !isUnsynced) return 4;
-      if (isQQ && !hasWordSync && !isUnsynced) return 5;
-      if (lower.includes('musixmatch') && !hasWordSync && !isUnsynced) return 6;
+      if (lower.includes('apple') && !hasWordSync && !isUnsynced) return 5;
+      if (isQQ && !hasWordSync && !isUnsynced) return 6;
+      if (lower.includes('musixmatch') && !hasWordSync && !isUnsynced) return 7;
+      if (!hasWordSync && !isUnsynced) return 8;
 
-      if (lower.includes('apple') && isUnsynced) return 7;
-      if (isQQ && isUnsynced) return 8;
-      if (lower.includes('musixmatch') && isUnsynced) return 9;
+      if (lower.includes('apple') && isUnsynced) return 9;
+      if (isQQ && isUnsynced) return 10;
+      if (lower.includes('musixmatch') && isUnsynced) return 11;
 
-      return 10;
+      return 20;
     };
 
     const allResults: YouLyPlusLyricsResult[] = [];
