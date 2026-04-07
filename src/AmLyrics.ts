@@ -2,7 +2,7 @@ import { css, html, LitElement, svg } from 'lit';
 import { property, query, state } from 'lit/decorators.js';
 import { GoogleService } from './GoogleService.js';
 
-const VERSION = '1.1.4';
+const VERSION = '1.1.5';
 const INSTRUMENTAL_THRESHOLD_MS = 7000; // Show dots for gaps >= 7s
 
 const KPOE_SERVERS = [
@@ -2048,14 +2048,13 @@ export class AmLyrics extends LitElement {
               }
             }
           } else {
-            // Not word type, try QQ
-            const qqParams = new URLSearchParams(params);
-            qqParams.set('source', 'qq');
-            const qqUrl = `https://lyricsplus.binimum.org/v2/lyrics/get?${qqParams.toString()}`;
+            // Not word type, try fetching any word synced lyrics from lyricsplus
+            const fallbackParams = new URLSearchParams(params);
+            const fallbackUrl = `https://lyricsplus.binimum.org/v2/lyrics/get?${fallbackParams.toString()}`;
             try {
-              const qqRes = await fetch(qqUrl);
-              if (qqRes.ok) {
-                const payload = await qqRes.json();
+              const fallbackRes = await fetch(fallbackUrl);
+              if (fallbackRes.ok) {
+                const payload = await fallbackRes.json();
                 const lines = AmLyrics.convertKPoeLyrics(payload);
                 const hasWordSync = lines?.some(
                   (line: any) =>
@@ -2064,15 +2063,19 @@ export class AmLyrics extends LitElement {
                     line.text.length > 1,
                 );
                 if (lines && lines.length > 0 && hasWordSync) {
-                  allResults.push({ lines, source: 'QQ' });
+                  const sourceLabel =
+                    payload?.metadata?.source ||
+                    payload?.metadata?.provider ||
+                    'LyricsPlus (KPoe)';
+                  allResults.push({ lines, source: sourceLabel });
                   return allResults;
                 }
               }
-            } catch (qqError) {
-              // Ignore QQ fetch error
+            } catch (fallbackError) {
+              // Ignore fallback fetch error
             }
 
-            // If QQ fails or has no word sync, fall back to bini lyrics
+            // If fallback fails or has no word sync, fall back to bini lyrics
             if (result.lyricsUrl) {
               const ttmlRes = await fetch(result.lyricsUrl);
               if (ttmlRes.ok) {
@@ -2139,17 +2142,16 @@ export class AmLyrics extends LitElement {
       }
     }
 
-    // If we haven't found a completely synced Apple/QQ result (rank 1 or 2) among the servers,
-    // force an explicit query against lyricsplus.binimum.org looking for QQ
+    // If we haven't found a completely synced result (rank 1 or 2) among the servers,
+    // force an explicit query against lyricsplus.binimum.org looking for word lyrics
     const hasHighRankResult = allResults.some(
       r => getRank(r.source, r.lines) <= 2,
     );
 
     if (!hasHighRankResult) {
       try {
-        const qqParams = new URLSearchParams(params);
-        qqParams.set('source', 'qq');
-        const url = `https://lyricsplus.binimum.org/v2/lyrics/get?${qqParams.toString()}`;
+        const fallbackParams = new URLSearchParams(params);
+        const url = `https://lyricsplus.binimum.org/v2/lyrics/get?${fallbackParams.toString()}`;
         const response = await fetch(url);
         if (response.ok) {
           const payload = await response.json();
@@ -2159,13 +2161,17 @@ export class AmLyrics extends LitElement {
               payload?.metadata?.source ||
               payload?.metadata?.provider ||
               'LyricsPlus (KPoe)';
-            if (lines && lines.length > 0) {
+            const hasWordSync = lines?.some(
+              (line: any) =>
+                line.text && Array.isArray(line.text) && line.text.length > 1,
+            );
+            if (lines && lines.length > 0 && hasWordSync) {
               allResults.push({ lines, source: sourceLabel });
             }
           }
         }
       } catch (error) {
-        // Explicit QQ fallback failed, ignore
+        // Explicit fallback failed, ignore
       }
     }
 
