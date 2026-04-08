@@ -2,7 +2,7 @@ import { css, html, LitElement, svg } from 'lit';
 import { property, query, state } from 'lit/decorators.js';
 import { GoogleService } from './GoogleService.js';
 
-const VERSION = '1.1.6';
+const VERSION = '1.1.7';
 const INSTRUMENTAL_THRESHOLD_MS = 7000; // Show dots for gaps >= 7s
 
 const KPOE_SERVERS = [
@@ -13,7 +13,7 @@ const KPOE_SERVERS = [
   'https://lyrics-plus-backend.vercel.app',
 ];
 const DEFAULT_KPOE_SOURCE_ORDER =
-  'apple,lyricsplus,musixmatch,spotify,musixmatch-word';
+  'apple,lyricsplus,musixmatch,spotify,qq,deezer,musixmatch-word';
 
 const TIDAL_SERVERS = [
   'https://arran.monochrome.tf',
@@ -2775,9 +2775,13 @@ export class AmLyrics extends LitElement {
       const explicitEnd = AmLyrics.toMilliseconds(entry.endTime);
       const lineEnd = explicitEnd || lineStart + (lineDuration || 0);
 
-      const syllabus = Array.isArray(entry.syllabus)
-        ? entry.syllabus.filter((s: any) => Boolean(s))
-        : [];
+      let syllabus = [];
+      if (Array.isArray(entry.syllabus)) {
+        syllabus = entry.syllabus.filter((s: any) => Boolean(s));
+      } else if (Array.isArray(entry.words)) {
+        syllabus = entry.words.filter((s: any) => Boolean(s));
+      }
+
       const mainSyllables: Syllable[] = [];
       const backgroundSyllables: Syllable[] = [];
 
