@@ -5,8 +5,15 @@ const CONFIG = {
   GOOGLE: {
     MAX_RETRIES: 3,
     RETRY_DELAY_MS: 1000,
+    FETCH_TIMEOUT_MS: 6000,
   },
 };
+
+interface RomanizableLine {
+  text?: { text: string; romanizedText?: string }[] | string;
+  romanizedText?: string;
+  isWordSynced?: boolean;
+}
 
 /**
  * Service for translating and romanizing text using Google Translate (unofficial API)
@@ -16,6 +23,17 @@ export class GoogleService {
     return new Promise(resolve => {
       setTimeout(resolve, ms);
     });
+  }
+
+  private static fetchWithTimeout(
+    url: string,
+    timeoutMs = CONFIG.GOOGLE.FETCH_TIMEOUT_MS,
+  ): Promise<Response> {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    return fetch(url, { signal: controller.signal }).finally(() =>
+      clearTimeout(timeoutId),
+    );
   }
 
   private static isPurelyLatinScript(text: string): boolean {
@@ -77,7 +95,7 @@ export class GoogleService {
         try {
           const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${targetLang}&dt=t&q=${encodeURIComponent(joinedText)}`;
           // eslint-disable-next-line no-await-in-loop
-          const response = await fetch(url);
+          const response = await GoogleService.fetchWithTimeout(url);
           if (!response.ok) throw new Error(`Status ${response.status}`);
           // eslint-disable-next-line no-await-in-loop
           const data = await response.json();
@@ -158,18 +176,22 @@ export class GoogleService {
     return isArray ? finalArray : finalArray[0];
   }
 
-  static async romanize(originalLyrics: any): Promise<any> {
+  static async romanize<T extends RomanizableLine>(
+    originalLyrics: T[] | { data?: T[]; content?: T[] },
+  ): Promise<T[]> {
     // Determine if we should treat as word-synced (has syllabus) or line-synced
-
-    const lines = Array.isArray(originalLyrics)
+    const lines: T[] = Array.isArray(originalLyrics)
       ? originalLyrics
-      : originalLyrics.data || originalLyrics.content;
+      : (originalLyrics as { data?: T[]; content?: T[] }).data ||
+        (originalLyrics as { data?: T[]; content?: T[] }).content ||
+        [];
 
-    if (!lines) return originalLyrics;
+    if (!lines || lines.length === 0)
+      return Array.isArray(originalLyrics) ? originalLyrics : [];
 
     // Check if word synced
     const isWordSynced = lines.some(
-      (l: any) =>
+      (l: RomanizableLine) =>
         l.isWordSynced !== false && Array.isArray(l.text) && l.text.length > 1,
     );
 
@@ -180,9 +202,11 @@ export class GoogleService {
     return this.romanizeLineSynced(lines);
   }
 
-  static async romanizeWordSynced(lines: any[]): Promise<any[]> {
+  static async romanizeWordSynced<T extends RomanizableLine>(
+    lines: T[],
+  ): Promise<T[]> {
     return Promise.all(
-      lines.map(async (line: any) => {
+      lines.map(async (line: T) => {
         if (
           !line.text ||
           !Array.isArray(line.text) ||
@@ -192,15 +216,19 @@ export class GoogleService {
           return line;
 
         // Get the entire line text to romanize together for context-aware pronunciation
-        const fullText = line.text.map((s: any) => s.text).join('');
+        const fullText = line.text
+          .map((s: { text: string }) => s.text)
+          .join('');
 
         // romanizeTexts expects an array of strings, so we pass an array of one
         const [romanizedFullLine] = await this.romanizeTexts([fullText]);
 
-        const newSyllabus = line.text.map((s: any) => ({
-          ...s,
-          romanizedText: s.romanizedText, // Keep any existing syllabus romanization if provided by API natively
-        }));
+        const newSyllabus = line.text.map(
+          (s: { text: string; romanizedText?: string }) => ({
+            ...s,
+            romanizedText: s.romanizedText, // Keep any existing syllabus romanization if provided by API natively
+          }),
+        );
 
         return {
           ...line,
@@ -211,22 +239,24 @@ export class GoogleService {
     );
   }
 
-  static async romanizeLineSynced(lines: any[]): Promise<any[]> {
-    const linesToRomanize = lines.map((line: any) => {
+  static async romanizeLineSynced<T extends RomanizableLine>(
+    lines: T[],
+  ): Promise<T[]> {
+    const linesToRomanize = lines.map((line: T) => {
       // If already romanized, skip
       if (line.romanizedText) {
         return '';
       }
       // If it's line-synced, it usually has 1 syllable with the full text.
       if (Array.isArray(line.text) && line.text.length > 0) {
-        return line.text.map((s: any) => s.text).join('');
+        return line.text.map((s: { text: string }) => s.text).join('');
       }
       return '';
     });
 
     const romanizedLines = await this.romanizeTexts(linesToRomanize);
 
-    return lines.map((line: any, index: number) => ({
+    return lines.map((line: T, index: number) => ({
       ...line,
       romanizedText: romanizedLines[index] || '',
     }));
@@ -255,7 +285,7 @@ export class GoogleService {
             const romanizeUrl = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=en&dt=rm&q=${encodeURIComponent(
               text,
             )}`;
-            const response = await fetch(romanizeUrl);
+            const response = await GoogleService.fetchWithTimeout(romanizeUrl);
             const data = await response.json();
 
             // Response format is [[["...","...","...","romanization"]],...]
