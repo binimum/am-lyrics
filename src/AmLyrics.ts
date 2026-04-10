@@ -4,6 +4,24 @@ import { GoogleService } from './GoogleService.js';
 
 const VERSION = '1.1.7';
 const INSTRUMENTAL_THRESHOLD_MS = 7000; // Show dots for gaps >= 7s
+const FETCH_TIMEOUT_MS = 8000; // Timeout for all lyrics fetch requests
+
+/**
+ * Fetch with an automatic timeout via AbortSignal.
+ * Rejects if the request takes longer than `timeoutMs`.
+ */
+function fetchWithTimeout(
+  url: string,
+  options: Parameters<typeof fetch>[1] = {},
+  timeoutMs = FETCH_TIMEOUT_MS,
+): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  return fetch(url, { ...options, signal: controller.signal }).finally(() =>
+    clearTimeout(timeoutId),
+  );
+}
 
 const KPOE_SERVERS = [
   'https://lyricsplus.binimum.org',
@@ -1491,10 +1509,18 @@ export class AmLyrics extends LitElement {
 
   private scrollAnimationTimeout?: ReturnType<typeof setTimeout>;
 
+  // AbortController for cancelling in-flight lyrics fetches
+  private fetchAbortController?: AbortController;
+
   // Syllable animation tracking
   private lastActiveIndex = 0;
 
   private visibleLineIds: Set<string> = new Set();
+
+  // Bound handler references for proper event listener removal
+  private _boundHandleUserScroll = this.handleUserScroll.bind(this);
+
+  private _boundAnimateProgress = this.animateProgress.bind(this);
 
   connectedCallback() {
     super.connectedCallback();
@@ -1505,13 +1531,46 @@ export class AmLyrics extends LitElement {
     super.disconnectedCallback();
     if (this.animationFrameId) {
       cancelAnimationFrame(this.animationFrameId);
+      this.animationFrameId = undefined;
     }
     if (this.userScrollTimeoutId) {
       clearTimeout(this.userScrollTimeoutId);
+      this.userScrollTimeoutId = undefined;
+    }
+    if (this.clickSeekTimeout) {
+      clearTimeout(this.clickSeekTimeout);
+      this.clickSeekTimeout = undefined;
+    }
+    if (this.scrollUnlockTimeout) {
+      clearTimeout(this.scrollUnlockTimeout);
+      this.scrollUnlockTimeout = undefined;
+    }
+    if (this.scrollAnimationTimeout) {
+      clearTimeout(this.scrollAnimationTimeout);
+      this.scrollAnimationTimeout = undefined;
+    }
+    // Cancel any in-flight fetch requests
+    this.fetchAbortController?.abort();
+    this.fetchAbortController = undefined;
+    // Remove scroll event listeners
+    if (this.lyricsContainer) {
+      this.lyricsContainer.removeEventListener(
+        'wheel',
+        this._boundHandleUserScroll,
+      );
+      this.lyricsContainer.removeEventListener(
+        'touchmove',
+        this._boundHandleUserScroll,
+      );
     }
   }
 
   private async fetchLyrics() {
+    // Cancel any in-flight fetch to prevent stale results from racing
+    this.fetchAbortController?.abort();
+    const controller = new AbortController();
+    this.fetchAbortController = controller;
+
     this.isLoading = true;
     this.lyrics = undefined;
     this.lyricsSource = null;
@@ -1521,6 +1580,8 @@ export class AmLyrics extends LitElement {
     this.hasFetchedAllProviders = false;
     try {
       const resolvedMetadata = await this.resolveSongMetadata();
+      // If a newer fetch was triggered while we awaited, bail out
+      if (controller.signal.aborted) return;
 
       const isMusicIdOnlyRequest =
         Boolean(this.musicId) &&
@@ -1605,7 +1666,10 @@ export class AmLyrics extends LitElement {
       this.lyrics = undefined;
       this.lyricsSource = null;
     } finally {
-      this.isLoading = false;
+      // Only update loading state if this fetch wasn't superseded
+      if (!controller.signal.aborted) {
+        this.isLoading = false;
+      }
     }
   }
 
@@ -1932,7 +1996,7 @@ export class AmLyrics extends LitElement {
 
       try {
         // eslint-disable-next-line no-await-in-loop
-        const response = await fetch(url);
+        const response = await fetchWithTimeout(url);
         if (response.ok) {
           // eslint-disable-next-line no-await-in-loop
           const payload = await response.json();
@@ -2036,13 +2100,13 @@ export class AmLyrics extends LitElement {
       }
 
       const cacheUrl = `https://lyrics-api.binimum.org/?${cacheParams.toString()}`;
-      const cacheRes = await fetch(cacheUrl);
+      const cacheRes = await fetchWithTimeout(cacheUrl);
       if (cacheRes.ok) {
         const cacheData = await cacheRes.json();
         if (cacheData.results && cacheData.results.length > 0) {
           const result = cacheData.results[0];
           if (result.timing_type === 'word' && result.lyricsUrl) {
-            const ttmlRes = await fetch(result.lyricsUrl);
+            const ttmlRes = await fetchWithTimeout(result.lyricsUrl);
             if (ttmlRes.ok) {
               const ttmlText = await ttmlRes.text();
               const lines = AmLyrics.parseTTML(ttmlText);
@@ -2056,7 +2120,7 @@ export class AmLyrics extends LitElement {
             const fallbackParams = new URLSearchParams(params);
             const fallbackUrl = `https://lyricsplus.binimum.org/v2/lyrics/get?${fallbackParams.toString()}`;
             try {
-              const fallbackRes = await fetch(fallbackUrl);
+              const fallbackRes = await fetchWithTimeout(fallbackUrl);
               if (fallbackRes.ok) {
                 const payload = await fallbackRes.json();
                 const lines = AmLyrics.convertKPoeLyrics(payload);
@@ -2081,7 +2145,7 @@ export class AmLyrics extends LitElement {
 
             // If fallback fails or has no word sync, fall back to bini lyrics
             if (result.lyricsUrl) {
-              const ttmlRes = await fetch(result.lyricsUrl);
+              const ttmlRes = await fetchWithTimeout(result.lyricsUrl);
               if (ttmlRes.ok) {
                 const ttmlText = await ttmlRes.text();
                 const lines = AmLyrics.parseTTML(ttmlText);
@@ -2103,10 +2167,10 @@ export class AmLyrics extends LitElement {
     }
 
     // Shuffle servers so we pick a random one first, with all others as fallback
-    // Limit to 2 servers to prevent unnecessary API spam when Apple lyrics are missing
+    // Try up to 3 servers to improve reliability when some have CORS or connectivity issues
     const shuffledServers = [...KPOE_SERVERS]
       .sort(() => Math.random() - 0.5)
-      .slice(0, 2);
+      .slice(0, 3);
 
     for (const base of shuffledServers) {
       const normalizedBase = base.endsWith('/') ? base.slice(0, -1) : base;
@@ -2116,12 +2180,12 @@ export class AmLyrics extends LitElement {
 
       try {
         // eslint-disable-next-line no-await-in-loop
-        const response = await fetch(url);
+        const response = await fetchWithTimeout(url);
         if (response.ok) {
           // eslint-disable-next-line no-await-in-loop
           payload = await response.json();
         }
-      } catch (error) {
+      } catch {
         payload = null;
       }
 
@@ -2156,7 +2220,7 @@ export class AmLyrics extends LitElement {
       try {
         const fallbackParams = new URLSearchParams(params);
         const url = `https://lyricsplus.binimum.org/v2/lyrics/get?${fallbackParams.toString()}`;
-        const response = await fetch(url);
+        const response = await fetchWithTimeout(url);
         if (response.ok) {
           const payload = await response.json();
           if (payload) {
@@ -2198,7 +2262,6 @@ export class AmLyrics extends LitElement {
       if (!match) {
         // Skip non-timestamped lines (headers like [ti:], [ar:], etc.)
         // eslint-disable-next-line no-continue
-        // eslint-disable-next-line no-continue
         continue;
       }
       const minutes = parseInt(match[1], 10);
@@ -2221,7 +2284,6 @@ export class AmLyrics extends LitElement {
 
       // Skip empty lines (instrumental gaps)
       if (!text.trim()) {
-        // eslint-disable-next-line no-continue
         // eslint-disable-next-line no-continue
         continue;
       }
@@ -2261,9 +2323,9 @@ export class AmLyrics extends LitElement {
 
     if (!title || !artist) return null;
 
-    // Pick 2 random unique servers
+    // Pick 3 random unique servers for better reliability
     const shuffled = [...TIDAL_SERVERS].sort(() => Math.random() - 0.5);
-    const serversToTry = shuffled.slice(0, 2);
+    const serversToTry = shuffled.slice(0, 3);
 
     for (const base of serversToTry) {
       try {
@@ -2273,12 +2335,11 @@ export class AmLyrics extends LitElement {
         const searchQuery = `${title} ${artist}`;
         const searchParams = new URLSearchParams({ s: searchQuery });
         // eslint-disable-next-line no-await-in-loop
-        const searchResponse = await fetch(
+        const searchResponse = await fetchWithTimeout(
           `${normalizedBase}/search/?${searchParams.toString()}`,
         );
 
         if (!searchResponse.ok) {
-          // eslint-disable-next-line no-continue
           // eslint-disable-next-line no-continue
           continue;
         }
@@ -2288,7 +2349,6 @@ export class AmLyrics extends LitElement {
         const items = searchData?.data?.items;
 
         if (!Array.isArray(items) || items.length === 0) {
-          // eslint-disable-next-line no-continue
           // eslint-disable-next-line no-continue
           continue;
         }
@@ -2308,18 +2368,16 @@ export class AmLyrics extends LitElement {
         const trackId = bestTrack?.id;
         if (!trackId) {
           // eslint-disable-next-line no-continue
-          // eslint-disable-next-line no-continue
           continue;
         }
 
         // Step 2: Fetch lyrics
         // eslint-disable-next-line no-await-in-loop
-        const lyricsResponse = await fetch(
+        const lyricsResponse = await fetchWithTimeout(
           `${normalizedBase}/lyrics/?id=${trackId}`,
         );
 
         if (!lyricsResponse.ok) {
-          // eslint-disable-next-line no-continue
           // eslint-disable-next-line no-continue
           continue;
         }
@@ -2361,7 +2419,7 @@ export class AmLyrics extends LitElement {
     try {
       const searchQuery = `${artist} ${title}`;
       const params = new URLSearchParams({ q: searchQuery });
-      const response = await fetch(
+      const response = await fetchWithTimeout(
         `https://lrclib.net/api/search?${params.toString()}`,
         {
           headers: {
@@ -2433,7 +2491,9 @@ export class AmLyrics extends LitElement {
 
     try {
       const params = new URLSearchParams({ title, artist });
-      const response = await fetch(`${GENIUS_WORKER_URL}?${params.toString()}`);
+      const response = await fetchWithTimeout(
+        `${GENIUS_WORKER_URL}?${params.toString()}`,
+      );
 
       if (!response.ok) return null;
       const data = await response.json();
@@ -2467,8 +2527,7 @@ export class AmLyrics extends LitElement {
         }
       }
     } catch {
-      // eslint-disable-next-line no-console
-      console.error('No Genius lyrics found');
+      // Genius fetch failed, will fall through to return null
     }
 
     return null;
@@ -2889,12 +2948,12 @@ export class AmLyrics extends LitElement {
     if (this.lyricsContainer) {
       this.lyricsContainer.addEventListener(
         'wheel',
-        this.handleUserScroll.bind(this),
+        this._boundHandleUserScroll,
         { passive: true },
       );
       this.lyricsContainer.addEventListener(
         'touchmove',
-        this.handleUserScroll.bind(this),
+        this._boundHandleUserScroll,
         { passive: true },
       );
     }
@@ -3641,8 +3700,9 @@ export class AmLyrics extends LitElement {
     this.animatingLines = [];
 
     // Find the clicked line element and scroll to it with forceScroll (like YouLyPlus)
+    // Timestamps are already in milliseconds — match the data-start-time attribute directly
     const clickedLineElement = this.lyricsContainer?.querySelector(
-      `.lyrics-line[data-start-time="${line.timestamp * 1000}"]`,
+      `.lyrics-line[data-start-time="${line.text[0]?.timestamp || 0}"]`,
     ) as HTMLElement | null;
 
     if (clickedLineElement && this.lyricsContainer) {
@@ -4434,9 +4494,7 @@ export class AmLyrics extends LitElement {
     }
 
     if (running) {
-      this.animationFrameId = requestAnimationFrame(
-        this.animateProgress.bind(this),
-      );
+      this.animationFrameId = requestAnimationFrame(this._boundAnimateProgress);
     } else if (this.animationFrameId) {
       // Stop animation if no words are running
       cancelAnimationFrame(this.animationFrameId);
