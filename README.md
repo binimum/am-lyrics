@@ -2,6 +2,10 @@
 
 [![](https://data.jsdelivr.com/v1/package/npm/@uimaxbai/am-lyrics/badge)](https://www.jsdelivr.com/package/npm/@uimaxbai/am-lyrics)
 
+![Running on Monochrome in fullscreen](./demo.webp)
+
+<p align="center">Running on <a href="https://monochrome.tf">Monochrome</a> in fullscreen.</p>
+
 This webcomponent follows the [open-wc](https://github.com/open-wc/open-wc) recommendation.
 
 This web component utilises the [lyricsplus](https://github.com/ibratabian17/YouLyPlus) API to fetch lyrics and the animations are heavily inspired by [YouLy+](https://github.com/ibratabian17/YouLyPlus).
