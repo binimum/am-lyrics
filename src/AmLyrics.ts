@@ -2,7 +2,7 @@ import { css, html, LitElement, svg } from 'lit';
 import { property, query, state } from 'lit/decorators.js';
 import { GoogleService } from './GoogleService.js';
 
-const VERSION = '1.2.3';
+const VERSION = '1.2.4';
 const INSTRUMENTAL_THRESHOLD_MS = 7000; // Show dots for gaps >= 7s
 const FETCH_TIMEOUT_MS = 8000; // Timeout for all lyrics fetch requests
 const SEEK_THRESHOLD_MS = 500;
@@ -265,14 +265,16 @@ export class AmLyrics extends LitElement {
 
     .background-vocal-container {
       max-height: 0;
-      padding-top: 0.2em;
+      padding-top: 0;
+      transform: translateY(-0.5em) scale(0.95);
       overflow: visible;
       opacity: 0;
       font-size: var(--lyplus-font-size-subtext);
       transition:
-        max-height 350ms cubic-bezier(0.33, 1, 0.68, 1),
-        opacity 300ms ease-out,
-        padding 350ms cubic-bezier(0.33, 1, 0.68, 1);
+        max-height 450ms cubic-bezier(0.33, 1, 0.68, 1),
+        opacity 400ms ease-out,
+        transform 450ms cubic-bezier(0.33, 1, 0.68, 1),
+        padding 450ms cubic-bezier(0.33, 1, 0.68, 1);
       margin: 0;
     }
 
@@ -280,11 +282,14 @@ export class AmLyrics extends LitElement {
     .lyrics-line.pre-active .background-vocal-container {
       max-height: 4em;
       opacity: 1;
+      padding-top: 0.2em;
+      transform: translateY(0) scale(1);
       transition:
-        max-height 350ms cubic-bezier(0.22, 1, 0.36, 1),
-        opacity 300ms ease-out,
-        padding 350ms cubic-bezier(0.22, 1, 0.36, 1);
-      will-change: max-height, opacity, padding;
+        max-height 450ms cubic-bezier(0.22, 1, 0.36, 1),
+        opacity 400ms ease-out,
+        transform 450ms cubic-bezier(0.22, 1, 0.36, 1),
+        padding 450ms cubic-bezier(0.22, 1, 0.36, 1);
+      will-change: max-height, opacity, padding, transform;
     }
 
     /* --- Line States & Modifiers --- */
@@ -616,49 +621,35 @@ export class AmLyrics extends LitElement {
        INSTRUMENTAL GAP STYLES
        ========================================================================== */
     .lyrics-gap {
-      max-height: 0;
-      padding: 0 var(--lyplus-padding-gap);
-      overflow: hidden;
+      max-height: 1.6em;
+      padding: var(--lyplus-padding-gap);
+      overflow: visible;
       opacity: 0;
       box-sizing: content-box;
       background-clip: unset;
       transform-origin: top;
       transition:
-        padding 220ms cubic-bezier(0.33, 1, 0.68, 1),
-        max-height 220ms cubic-bezier(0.33, 1, 0.68, 1),
         opacity 160ms ease-out,
         transform var(--scroll-duration, 280ms) var(--lyrics-line-delay, 0ms);
     }
 
     .lyrics-gap.active {
-      max-height: 1.6em;
-      padding: var(--lyplus-padding-gap);
       opacity: 1;
-      overflow: visible;
       transition:
-        padding 220ms cubic-bezier(0.22, 1, 0.36, 1),
-        max-height 220ms cubic-bezier(0.22, 1, 0.36, 1),
         opacity 160ms ease-out,
         transform var(--scroll-duration, 280ms);
-      will-change: max-height, opacity, padding;
+      will-change: opacity;
     }
 
     /* Exiting state: quickly collapse width and height so dots don't distort page, or remove max-height transition */
     .lyrics-gap.gap-exiting {
-      max-height: 0;
-      padding: 0 var(--lyplus-padding-gap);
-      opacity: 0;
-      overflow: visible;
-      transition:
-        padding var(--gap-exit-duration, 360ms) cubic-bezier(0.33, 1, 0.68, 1),
-        max-height var(--gap-exit-duration, 360ms)
-          cubic-bezier(0.33, 1, 0.68, 1),
-        opacity 160ms ease-out,
-        transform var(--scroll-duration, 280ms);
+      opacity: 1;
+      transition: transform var(--scroll-duration, 280ms);
     }
 
     .lyrics-gap .main-vocal-container {
       transform: translateY(-25%) scale(1) translateZ(0);
+      transition: transform 400ms cubic-bezier(0.22, 1, 0.36, 1);
     }
 
     /* Jump animation plays during exit */
@@ -3293,7 +3284,17 @@ export class AmLyrics extends LitElement {
                 preActiveLineIndex = i;
                 nextLineEl.classList.add('pre-active');
                 this.clearPreActiveClasses(i);
-                this.focusLine(nextLineEl);
+
+                const slowScrollDuration = Math.max(
+                  SCROLL_ANIMATION_DURATION_MS,
+                  timeUntilStart,
+                );
+                this.focusLine(
+                  nextLineEl,
+                  false,
+                  slowScrollDuration,
+                  !!currentGap,
+                );
               }
               break;
             }
@@ -3551,7 +3552,12 @@ export class AmLyrics extends LitElement {
     return candidateIndex;
   }
 
-  private focusLine(lineElement: HTMLElement, forceScroll = false): void {
+  private focusLine(
+    lineElement: HTMLElement,
+    forceScroll = false,
+    scrollDuration: number | undefined = undefined,
+    skipScroll = false,
+  ): void {
     const primaryChanged = lineElement !== this.currentPrimaryActiveLine;
 
     if (primaryChanged) {
@@ -3562,12 +3568,13 @@ export class AmLyrics extends LitElement {
     this.updatePositionClasses(lineElement);
 
     if (
+      !skipScroll &&
       (forceScroll || primaryChanged) &&
       this.autoScroll &&
       !this.isUserScrolling &&
       !this.isClickSeeking
     ) {
-      this.scrollToActiveLineYouLy(lineElement, forceScroll);
+      this.scrollToActiveLineYouLy(lineElement, forceScroll, scrollDuration);
     }
   }
 
@@ -4028,7 +4035,11 @@ export class AmLyrics extends LitElement {
   /**
    * Animate scroll with staggered delay for smooth YouLyPlus-style scrolling
    */
-  private animateScrollYouLy(newTranslateY: number, forceScroll = false): void {
+  private animateScrollYouLy(
+    newTranslateY: number,
+    forceScroll = false,
+    scrollDuration: number | undefined = undefined,
+  ): void {
     if (!this.lyricsContainer) return;
     const parent = this.lyricsContainer;
 
@@ -4127,16 +4138,15 @@ export class AmLyrics extends LitElement {
       const delay =
         i >= referenceIndex ? (delayCounter - 1) * delayIncrement : 0;
 
+      const duration = scrollDuration ?? SCROLL_ANIMATION_DURATION_MS;
+
       line.style.setProperty('--scroll-delta', `${delta}px`);
       line.style.setProperty('--lyrics-line-delay', `${delay}ms`);
-      line.style.setProperty(
-        '--scroll-duration',
-        `${SCROLL_ANIMATION_DURATION_MS}ms`,
-      );
+      line.style.setProperty('--scroll-duration', `${duration}ms`);
 
       newAnimatingLines.push(line);
 
-      const lineDuration = SCROLL_ANIMATION_DURATION_MS + delay;
+      const lineDuration = duration + delay;
       if (lineDuration > maxAnimationDuration) {
         maxAnimationDuration = lineDuration;
       }
@@ -4154,7 +4164,7 @@ export class AmLyrics extends LitElement {
     }
 
     animState.isAnimating = true;
-    const BASE_DURATION = SCROLL_ANIMATION_DURATION_MS;
+    const BASE_DURATION = scrollDuration ?? SCROLL_ANIMATION_DURATION_MS;
 
     this.scrollUnlockTimeout = setTimeout(() => {
       animState.isAnimating = false;
@@ -4162,7 +4172,7 @@ export class AmLyrics extends LitElement {
       if (animState.pendingUpdate !== null) {
         const pendingValue = animState.pendingUpdate;
         animState.pendingUpdate = null;
-        this.animateScrollYouLy(pendingValue, false);
+        this.animateScrollYouLy(pendingValue, false, scrollDuration);
       }
     }, BASE_DURATION);
 
@@ -4237,6 +4247,7 @@ export class AmLyrics extends LitElement {
   private scrollToActiveLineYouLy(
     activeLine: HTMLElement,
     forceScroll = false,
+    scrollDuration: number | undefined = undefined,
   ): void {
     if (!activeLine || !this.lyricsContainer) return;
 
@@ -4276,11 +4287,12 @@ export class AmLyrics extends LitElement {
       this.userScrollTimeoutId = undefined;
     }
 
+    const duration = scrollDuration ?? SCROLL_ANIMATION_DURATION_MS;
     setTimeout(() => {
       this.isProgrammaticScroll = false;
-    }, SCROLL_ANIMATION_DURATION_MS + 160);
+    }, duration + 160);
 
-    this.animateScrollYouLy(targetTranslateY, forceScroll);
+    this.animateScrollYouLy(targetTranslateY, forceScroll, scrollDuration);
   }
 
   /**
@@ -5065,15 +5077,15 @@ export class AmLyrics extends LitElement {
                   combinedDuration >= 1110 && combinedDuration >= wordLen * 550;
               } else {
                 isGrowableVW =
-                  combinedDuration >= 900 && combinedDuration >= wordLen * 300;
+                  combinedDuration >= 850 && combinedDuration >= wordLen * 200;
               }
             }
 
             // Glow requirement (more strict)
             const isGlowingVW =
               isGrowableVW &&
-              combinedDuration >= 1200 &&
-              combinedDuration >= combinedText.length * 300;
+              combinedDuration >= 1000 &&
+              combinedDuration >= combinedText.length * 250;
 
             let charOff = 0;
             for (let gi = vwStart; gi <= vwEnd; gi += 1) {
