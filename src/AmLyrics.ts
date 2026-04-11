@@ -2,11 +2,12 @@ import { css, html, LitElement, svg } from 'lit';
 import { property, query, state } from 'lit/decorators.js';
 import { GoogleService } from './GoogleService.js';
 
-const VERSION = '1.2.5';
+const VERSION = '1.2.6';
 const INSTRUMENTAL_THRESHOLD_MS = 7000; // Show dots for gaps >= 7s
 const FETCH_TIMEOUT_MS = 8000; // Timeout for all lyrics fetch requests
 const SEEK_THRESHOLD_MS = 500;
 const PRE_SCROLL_LEAD_MS = 500;
+const PRE_SCROLL_LEAD_SHORT_MS = 150;
 const SCROLL_ANIMATION_DURATION_MS = 280;
 const SCROLL_DELAY_INCREMENT_MS = 24;
 const GAP_PULSE_DURATION_MS = 4000;
@@ -3274,12 +3275,24 @@ export class AmLyrics extends LitElement {
             `#lyrics-line-${i}`,
           ) as HTMLElement;
 
-          if (timeUntilStart > 0 && timeUntilStart <= PRE_SCROLL_LEAD_MS) {
+          const isBackToBack = this.activeLineIndices.length > 0;
+          const leadTime = isBackToBack
+            ? PRE_SCROLL_LEAD_SHORT_MS
+            : PRE_SCROLL_LEAD_MS;
+
+          if (timeUntilStart > leadTime) {
+            break; // Lines are ordered by timestamp, no need to check further
+          }
+
+          if (timeUntilStart > 0 && timeUntilStart <= leadTime) {
             // Time to pre-scroll and pre-activate!
             if (nextLineEl) {
-              // Apply unblur & zoom effect ahead of lyric start
               preActiveLineIndex = i;
-              nextLineEl.classList.add('pre-active');
+
+              if (!isBackToBack) {
+                // Apply unblur & zoom effect ahead of lyric start only if no line is currently active
+                nextLineEl.classList.add('pre-active');
+              }
               this.clearPreActiveClasses(i);
 
               const slowScrollDuration = Math.max(
