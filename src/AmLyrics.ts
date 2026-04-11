@@ -2,7 +2,7 @@ import { css, html, LitElement, svg } from 'lit';
 import { property, query, state } from 'lit/decorators.js';
 import { GoogleService } from './GoogleService.js';
 
-const VERSION = '1.2.0';
+const VERSION = '1.2.1';
 const INSTRUMENTAL_THRESHOLD_MS = 7000; // Show dots for gaps >= 7s
 const FETCH_TIMEOUT_MS = 8000; // Timeout for all lyrics fetch requests
 const SEEK_THRESHOLD_MS = 500;
@@ -1630,6 +1630,7 @@ export class AmLyrics extends LitElement {
         const youLyResults = await AmLyrics.fetchLyricsFromYouLyPlus(
           title,
           artist,
+          resolvedMetadata.catalogIsrc,
           resolvedMetadata.metadata,
         );
 
@@ -2062,6 +2063,7 @@ export class AmLyrics extends LitElement {
   private static async fetchLyricsFromYouLyPlus(
     title: string,
     artist: string,
+    isrc?: string,
     metadata: { durationMs?: number; album?: string } = {},
   ): Promise<YouLyPlusLyricsResult[]> {
     if (!title || !artist) return [];
@@ -2117,79 +2119,99 @@ export class AmLyrics extends LitElement {
 
     const allResults: YouLyPlusLyricsResult[] = [];
 
-    // Try cache API first
+    // Try BiniLyrics cache API first
     try {
-      const cacheParams = new URLSearchParams({
-        track: title,
-        artist,
-      });
-      if (metadata.album) {
-        cacheParams.append('album', metadata.album);
-      }
-      if (metadata.durationMs && metadata.durationMs > 0) {
-        cacheParams.append(
-          'duration',
-          Math.round(metadata.durationMs / 1000).toString(),
-        );
+      let cacheData: any = null;
+
+      // First attempt: Prefer ISRC search if available
+      if (isrc) {
+        try {
+          const isrcUrl = `https://lyrics-api.binimum.org/?isrc=${encodeURIComponent(isrc)}`;
+          const isrcRes = await fetchWithTimeout(isrcUrl);
+          if (isrcRes.ok) {
+            const data = await isrcRes.json();
+            if (data.results && data.results.length > 0) {
+              cacheData = data;
+            }
+          }
+        } catch (isrcErr) {
+          // Fall through to title/artist search
+        }
       }
 
-      const cacheUrl = `https://lyrics-api.binimum.org/?${cacheParams.toString()}`;
-      const cacheRes = await fetchWithTimeout(cacheUrl);
-      if (cacheRes.ok) {
-        const cacheData = await cacheRes.json();
-        if (cacheData.results && cacheData.results.length > 0) {
-          const result = cacheData.results[0];
-          if (result.timing_type === 'word' && result.lyricsUrl) {
+      // Second attempt: Fallback to title and artist search if ISRC search failed or was not available
+      if (!cacheData) {
+        const cacheParams = new URLSearchParams({
+          track: title,
+          artist,
+        });
+        if (metadata.album) {
+          cacheParams.append('album', metadata.album);
+        }
+        if (metadata.durationMs && metadata.durationMs > 0) {
+          cacheParams.append(
+            'duration',
+            Math.round(metadata.durationMs / 1000).toString(),
+          );
+        }
+
+        const cacheUrl = `https://lyrics-api.binimum.org/?${cacheParams.toString()}`;
+        const cacheRes = await fetchWithTimeout(cacheUrl);
+        if (cacheRes.ok) {
+          cacheData = await cacheRes.json();
+        }
+      }
+
+      if (cacheData && cacheData.results && cacheData.results.length > 0) {
+        const result = cacheData.results[0];
+        if (result.timing_type === 'word' && result.lyricsUrl) {
+          const ttmlRes = await fetchWithTimeout(result.lyricsUrl);
+          if (ttmlRes.ok) {
+            const ttmlText = await ttmlRes.text();
+            const lines = AmLyrics.parseTTML(ttmlText);
+            if (lines && lines.length > 0) {
+              allResults.push({ lines, source: 'BiniLyrics' });
+              return allResults;
+            }
+          }
+        } else {
+          // Not word type, try fetching any word synced lyrics from lyricsplus
+          const fallbackParams = new URLSearchParams(params);
+          const fallbackUrl = `https://lyricsplus.binimum.org/v2/lyrics/get?${fallbackParams.toString()}`;
+          try {
+            const fallbackRes = await fetchWithTimeout(fallbackUrl);
+            if (fallbackRes.ok) {
+              const payload = await fallbackRes.json();
+              const lines = AmLyrics.convertKPoeLyrics(payload);
+              const hasWordSync = lines?.some(
+                (line: any) =>
+                  line.text && Array.isArray(line.text) && line.text.length > 1,
+              );
+              if (lines && lines.length > 0 && hasWordSync) {
+                const sourceLabel =
+                  payload?.metadata?.source ||
+                  payload?.metadata?.provider ||
+                  'LyricsPlus (KPoe)';
+                allResults.push({ lines, source: sourceLabel });
+                return allResults;
+              }
+            }
+          } catch (fallbackError) {
+            // Ignore fallback fetch error
+          }
+
+          // If fallback fails or has no word sync, fall back to bini lyrics
+          if (result.lyricsUrl) {
             const ttmlRes = await fetchWithTimeout(result.lyricsUrl);
             if (ttmlRes.ok) {
               const ttmlText = await ttmlRes.text();
               const lines = AmLyrics.parseTTML(ttmlText);
               if (lines && lines.length > 0) {
-                allResults.push({ lines, source: 'BiniLyrics' });
+                allResults.push({
+                  lines,
+                  source: 'BiniLyrics',
+                });
                 return allResults;
-              }
-            }
-          } else {
-            // Not word type, try fetching any word synced lyrics from lyricsplus
-            const fallbackParams = new URLSearchParams(params);
-            const fallbackUrl = `https://lyricsplus.binimum.org/v2/lyrics/get?${fallbackParams.toString()}`;
-            try {
-              const fallbackRes = await fetchWithTimeout(fallbackUrl);
-              if (fallbackRes.ok) {
-                const payload = await fallbackRes.json();
-                const lines = AmLyrics.convertKPoeLyrics(payload);
-                const hasWordSync = lines?.some(
-                  (line: any) =>
-                    line.text &&
-                    Array.isArray(line.text) &&
-                    line.text.length > 1,
-                );
-                if (lines && lines.length > 0 && hasWordSync) {
-                  const sourceLabel =
-                    payload?.metadata?.source ||
-                    payload?.metadata?.provider ||
-                    'LyricsPlus (KPoe)';
-                  allResults.push({ lines, source: sourceLabel });
-                  return allResults;
-                }
-              }
-            } catch (fallbackError) {
-              // Ignore fallback fetch error
-            }
-
-            // If fallback fails or has no word sync, fall back to bini lyrics
-            if (result.lyricsUrl) {
-              const ttmlRes = await fetchWithTimeout(result.lyricsUrl);
-              if (ttmlRes.ok) {
-                const ttmlText = await ttmlRes.text();
-                const lines = AmLyrics.parseTTML(ttmlText);
-                if (lines && lines.length > 0) {
-                  allResults.push({
-                    lines,
-                    source: 'BiniLyrics',
-                  });
-                  return allResults;
-                }
               }
             }
           }
