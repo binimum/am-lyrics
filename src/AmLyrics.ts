@@ -2,7 +2,7 @@ import { css, html, LitElement, svg } from 'lit';
 import { property, query, state } from 'lit/decorators.js';
 import { GoogleService } from './GoogleService.js';
 
-const VERSION = '1.2.4';
+const VERSION = '1.2.5';
 const INSTRUMENTAL_THRESHOLD_MS = 7000; // Show dots for gaps >= 7s
 const FETCH_TIMEOUT_MS = 8000; // Timeout for all lyrics fetch requests
 const SEEK_THRESHOLD_MS = 500;
@@ -3264,44 +3264,40 @@ export class AmLyrics extends LitElement {
         !this.isClickSeeking &&
         this.lyrics
       ) {
-        // Condition: ONLY pre-scroll if no other lyric is currently playing.
-        // If a lyric is playing, we must wait for it to finish (handled by updated()).
-        if (this.activeLineIndices.length === 0) {
-          let preActiveLineIndex: number | null = null;
+        let preActiveLineIndex: number | null = null;
 
-          for (let i = 0; i < this.lyrics.length; i += 1) {
-            const line = this.lyrics[i];
-            const timeUntilStart = line.timestamp - newTime;
+        for (let i = 0; i < this.lyrics.length; i += 1) {
+          const line = this.lyrics[i];
+          const timeUntilStart = line.timestamp - newTime;
 
-            const nextLineEl = this.lyricsContainer.querySelector(
-              `#lyrics-line-${i}`,
-            ) as HTMLElement;
+          const nextLineEl = this.lyricsContainer.querySelector(
+            `#lyrics-line-${i}`,
+          ) as HTMLElement;
 
-            if (timeUntilStart > 0 && timeUntilStart <= PRE_SCROLL_LEAD_MS) {
-              // Time to pre-scroll and pre-activate!
-              if (nextLineEl) {
-                // Apply unblur & zoom effect ahead of lyric start
-                preActiveLineIndex = i;
-                nextLineEl.classList.add('pre-active');
-                this.clearPreActiveClasses(i);
+          if (timeUntilStart > 0 && timeUntilStart <= PRE_SCROLL_LEAD_MS) {
+            // Time to pre-scroll and pre-activate!
+            if (nextLineEl) {
+              // Apply unblur & zoom effect ahead of lyric start
+              preActiveLineIndex = i;
+              nextLineEl.classList.add('pre-active');
+              this.clearPreActiveClasses(i);
 
-                const slowScrollDuration = Math.max(
-                  SCROLL_ANIMATION_DURATION_MS,
-                  timeUntilStart,
-                );
-                this.focusLine(
-                  nextLineEl,
-                  false,
-                  slowScrollDuration,
-                  !!currentGap,
-                );
-              }
-              break;
+              const slowScrollDuration = Math.max(
+                SCROLL_ANIMATION_DURATION_MS,
+                timeUntilStart,
+              );
+              this.focusLine(
+                nextLineEl,
+                false,
+                slowScrollDuration,
+                !!currentGap,
+              );
             }
+            break;
           }
-
-          this.clearPreActiveClasses(preActiveLineIndex);
         }
+
+        this.clearPreActiveClasses(preActiveLineIndex);
       }
     }
   }
