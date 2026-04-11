@@ -2,7 +2,7 @@ import { css, html, LitElement, svg } from 'lit';
 import { property, query, state } from 'lit/decorators.js';
 import { GoogleService } from './GoogleService.js';
 
-const VERSION = '1.2.2';
+const VERSION = '1.2.3';
 const INSTRUMENTAL_THRESHOLD_MS = 7000; // Show dots for gaps >= 7s
 const FETCH_TIMEOUT_MS = 8000; // Timeout for all lyrics fetch requests
 const SEEK_THRESHOLD_MS = 500;
@@ -1619,7 +1619,8 @@ export class AmLyrics extends LitElement {
         Boolean(this.musicId) &&
         !this.songTitle &&
         !this.songArtist &&
-        !this.query;
+        !this.query &&
+        !this.isrc;
 
       const collectedSources: { lines: LyricsLine[]; source: string }[] = [];
 
@@ -1900,7 +1901,7 @@ export class AmLyrics extends LitElement {
 
     const appleSong: any = null;
     let appleId = this.musicId;
-    let catalogIsrc: string | undefined;
+    let catalogIsrc: string | undefined = this.isrc;
 
     if (
       this.query &&
@@ -2066,9 +2067,12 @@ export class AmLyrics extends LitElement {
     isrc?: string,
     metadata: { durationMs?: number; album?: string } = {},
   ): Promise<YouLyPlusLyricsResult[]> {
-    if (!title || !artist) return [];
+    if ((!title || !artist) && !isrc) return [];
 
-    const params = new URLSearchParams({ title, artist });
+    const params = new URLSearchParams();
+    if (title) params.append('title', title);
+    if (artist) params.append('artist', artist);
+    if (isrc) params.append('isrc', isrc);
 
     if (metadata.album) {
       params.append('album', metadata.album);
@@ -2140,7 +2144,7 @@ export class AmLyrics extends LitElement {
       }
 
       // Second attempt: Fallback to title and artist search if ISRC search failed or was not available
-      if (!cacheData) {
+      if (!cacheData && title && artist) {
         const cacheParams = new URLSearchParams({
           track: title,
           artist,
