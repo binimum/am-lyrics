@@ -2,17 +2,17 @@ import { css, html, LitElement, svg } from 'lit';
 import { property, query, state } from 'lit/decorators.js';
 import { GoogleService } from './GoogleService.js';
 
-const VERSION = '1.2.6';
+const VERSION = '1.2.7';
 const INSTRUMENTAL_THRESHOLD_MS = 7000; // Show dots for gaps >= 7s
 const FETCH_TIMEOUT_MS = 8000; // Timeout for all lyrics fetch requests
 const SEEK_THRESHOLD_MS = 500;
 const PRE_SCROLL_LEAD_MS = 500;
-const PRE_SCROLL_LEAD_SHORT_MS = 150;
+const PRE_SCROLL_LEAD_SHORT_MS = 350;
 const SCROLL_ANIMATION_DURATION_MS = 280;
 const SCROLL_DELAY_INCREMENT_MS = 24;
 const GAP_PULSE_DURATION_MS = 4000;
 const GAP_PULSE_CYCLE_MS = GAP_PULSE_DURATION_MS * 2;
-const GAP_EXIT_LEAD_MS = 360;
+const GAP_EXIT_LEAD_MS = 600;
 const GAP_MIN_SCALE = 0.85;
 
 /**
@@ -1010,8 +1010,8 @@ export class AmLyrics extends LitElement {
           0.75em 100%,
           0% 100%;
         background-position:
-          -0.375em 0%,
-          left;
+          -0.75em 0%,
+          -0.375em 0%;
       }
       100% {
         background-size:
@@ -1105,7 +1105,7 @@ export class AmLyrics extends LitElement {
           0.75em 100%,
           0% 100%;
         background-position:
-          -0.85em 0%,
+          -0.75em 0%,
           left;
       }
       to {
@@ -1113,7 +1113,7 @@ export class AmLyrics extends LitElement {
           0.75em 100%,
           0% 100%;
         background-position:
-          -0.85em 0%,
+          -0.375em 0%,
           left;
       }
     }
@@ -3302,8 +3302,7 @@ export class AmLyrics extends LitElement {
               this.focusLine(
                 nextLineEl,
                 false,
-                slowScrollDuration,
-                !!currentGap,
+                isBackToBack ? 500 : slowScrollDuration,
               );
             }
             break;
@@ -4344,71 +4343,29 @@ export class AmLyrics extends LitElement {
       value: string;
     }> = [];
 
-    // Step 1 & 2: Apply animations
+    // Step 1: Grow Pass
     if (isGrowable && isFirstSyllable && allWordCharSpans.length > 0) {
-      // Glow AND wipe applied to ALL characters simultaneously from the first syllable
-      // This prevents CSS animation restarts because the `animation` property is set once.
+      const finalDuration = wordDurationMs;
+      const baseDelayPerChar = finalDuration * 0.09;
+      const growDurationMs = finalDuration * 1.5;
 
-      const firstSyllableStartTime = parseFloat(
-        syllable.getAttribute('data-start-time') || '0',
-      );
-
-      allWordCharSpans.forEach((span, charIndexInWord) => {
+      allWordCharSpans.forEach(span => {
         const horizontalOffset = parseFloat(
           span.dataset.horizontalOffset || '0',
         );
-
         const maxScale = span.dataset.maxScale || '1.1';
         const shadowIntensity = span.dataset.shadowIntensity || '0.6';
         const translateYPeak = span.dataset.translateYPeak || '-2';
 
-        const animationParts: string[] = [];
+        const syllableCharIndex = parseFloat(
+          span.dataset.syllableCharIndex || '0',
+        );
+        const growDelay = baseDelayPerChar * syllableCharIndex;
 
-        const parentSyllable = span.closest('.lyrics-syllable');
-        if (parentSyllable) {
-          const parentDuration = parseFloat(
-            parentSyllable.getAttribute('data-duration') || '0',
-          );
-          const parentStartTime = parseFloat(
-            parentSyllable.getAttribute('data-start-time') || '0',
-          );
-
-          const startPct = parseFloat(span.dataset.wipeStart || '0');
-          const durationPct = parseFloat(span.dataset.wipeDuration || '0');
-
-          const relativeStartOffset = Math.max(
-            0,
-            parentStartTime - firstSyllableStartTime,
-          );
-          const wipeDelay = relativeStartOffset + parentDuration * startPct;
-          const wipeDuration = parentDuration * durationPct;
-
-          const useStartAnimation = isFirstInContainer && charIndexInWord === 0;
-          let charWipeAnimation = 'wipe';
-          if (useStartAnimation)
-            charWipeAnimation = isRTL ? 'start-wipe-rtl' : 'start-wipe';
-          else charWipeAnimation = isRTL ? 'wipe-rtl' : 'wipe';
-
-          // Blend word and syllable durations to let the gradient flow smoothly
-          // while still responding to syllable pacing (no strict exactness, just natural flow)
-          const growDelay = wipeDelay;
-          const growDurationMs = Math.max(
-            600,
-            wordDurationMs * 0.8 + parentDuration * 1.5,
-          );
-
-          animationParts.push(
-            `grow-dynamic ${growDurationMs}ms ease-in-out ${growDelay}ms forwards`,
-          );
-
-          if (wipeDuration > 0) {
-            animationParts.push(
-              `${charWipeAnimation} ${wipeDuration}ms linear ${wipeDelay}ms forwards`,
-            );
-          }
-        }
-
-        charAnimationsMap.set(span, animationParts.join(', '));
+        charAnimationsMap.set(
+          span,
+          `grow-dynamic ${growDurationMs}ms ease-in-out ${growDelay}ms forwards`,
+        );
 
         styleUpdates.push({
           element: span,
@@ -4431,31 +4388,10 @@ export class AmLyrics extends LitElement {
           value: `${translateYPeak}`,
         });
       });
-    } else if (isGrowable && !isFirstSyllable && charSpans.length > 0) {
-      // For subsequent syllables of a growable word:
-      // If they already have `grow-dynamic`, it means the first syllable correctly took care of BOTH grow and wipe!
-      // Otherwise, they scrubbed directly into this syllable, so let's at least do the wipe.
-      charSpans.forEach(span => {
-        const existingAnimation =
-          charAnimationsMap.get(span) || span.style.animation || '';
-        if (existingAnimation.includes('grow-dynamic')) return;
+    }
 
-        const startPct = parseFloat(span.dataset.wipeStart || '0');
-        const durationPct = parseFloat(span.dataset.wipeDuration || '0');
-        const wipeDelay = syllableDurationMs * startPct;
-        const wipeDuration = syllableDurationMs * durationPct;
-
-        const charWipeAnimation = isRTL ? 'wipe-rtl' : 'wipe';
-
-        if (wipeDuration > 0) {
-          charAnimationsMap.set(
-            span,
-            `${charWipeAnimation} ${wipeDuration}ms linear ${wipeDelay}ms forwards`,
-          );
-        }
-      });
-    } else if (charSpans.length > 0) {
-      // Per-character wipe for non-growable words (matching YouLyPlus)
+    // Step 2: Wipe Pass
+    if (charSpans.length > 0) {
       charSpans.forEach((span, charIndex) => {
         const startPct = parseFloat(span.dataset.wipeStart || '0');
         const durationPct = parseFloat(span.dataset.wipeDuration || '0');
@@ -4471,11 +4407,38 @@ export class AmLyrics extends LitElement {
           charWipeAnimation = isRTL ? 'wipe-rtl' : 'wipe';
         }
 
+        const existingAnimation =
+          charAnimationsMap.get(span) || span.style.animation || '';
+
+        const animationParts = [];
+
+        if (existingAnimation && existingAnimation.includes('grow-dynamic')) {
+          animationParts.push(existingAnimation.split(',')[0].trim());
+        }
+        if (charIndex > 0) {
+          const arrivalTime = span.dataset.preWipeArrival
+            ? parseFloat(span.dataset.preWipeArrival)
+            : wipeDelay;
+          const constantDuration = parseFloat(
+            span.dataset.preWipeDuration || '100',
+          );
+          const animDelay = arrivalTime - constantDuration;
+
+          if (constantDuration > 0) {
+            animationParts.push(
+              `pre-wipe-char ${constantDuration}ms linear ${animDelay}ms forwards`,
+            );
+          }
+        }
+
         if (wipeDuration > 0) {
-          charAnimationsMap.set(
-            span,
+          animationParts.push(
             `${charWipeAnimation} ${wipeDuration}ms linear ${wipeDelay}ms forwards`,
           );
+        }
+
+        if (animationParts.length > 0) {
+          charAnimationsMap.set(span, animationParts.join(', '));
         }
       });
     } else {
