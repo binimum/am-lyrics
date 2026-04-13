@@ -2,7 +2,7 @@ import { css, html, LitElement, svg } from 'lit';
 import { property, query, state } from 'lit/decorators.js';
 import { GoogleService } from './GoogleService.js';
 
-const VERSION = '1.2.7';
+const VERSION = '1.2.8';
 const INSTRUMENTAL_THRESHOLD_MS = 7000; // Show dots for gaps >= 7s
 const FETCH_TIMEOUT_MS = 8000; // Timeout for all lyrics fetch requests
 const SEEK_THRESHOLD_MS = 500;
@@ -1475,11 +1475,31 @@ export class AmLyrics extends LitElement {
   @state()
   private currentSourceIndex = 0;
 
-  @state()
   private isFetchingAlternatives = false;
 
-  @state()
   private hasFetchedAllProviders = false;
+
+  private _updateFooter() {
+    const footer = this.shadowRoot?.querySelector('.lyrics-footer');
+    if (!footer) return;
+    const switchBtn = footer.querySelector('.source-switch-btn');
+    const svgEl = footer.querySelector('.source-switch-svg');
+    const labelEl = footer.querySelector('.source-switch-label');
+    if (switchBtn) {
+      (switchBtn as HTMLButtonElement).disabled = this.isFetchingAlternatives;
+    }
+    if (svgEl) {
+      svgEl.setAttribute(
+        'style',
+        `margin-right: 4px; ${this.isFetchingAlternatives ? 'animation: spin 1s linear infinite;' : ''}`,
+      );
+    }
+    if (labelEl) {
+      labelEl.textContent = this.isFetchingAlternatives
+        ? 'Switching...'
+        : 'Switch';
+    }
+  }
 
   private animationFrameId?: number;
 
@@ -1500,7 +1520,6 @@ export class AmLyrics extends LitElement {
 
   private userScrollTimeoutId?: number;
 
-  @state()
   private isUserScrolling = false;
 
   private isProgrammaticScroll = false;
@@ -1511,6 +1530,33 @@ export class AmLyrics extends LitElement {
 
   // Cached DOM elements for animation updates
   private cachedLyricsLines: HTMLElement[] = [];
+
+  // Cached line and gap element maps for fast lookup
+  private lineElementCache = new Map<number, HTMLElement>();
+
+  private gapElementCache = new Map<number, HTMLElement>();
+
+  // Cached gap computation results
+  private cachedAllGaps: Array<{
+    insertBeforeIndex: number;
+    gapStart: number;
+    gapEnd: number;
+  }> = [];
+
+  // Cached isUnsynced flag
+  private cachedIsUnsynced = false;
+
+  // Cached pre-computed line data for render
+  private cachedLineData: Array<{
+    wordGroups: Syllable[][];
+    groupGrowable: boolean[];
+    groupGlowing: boolean[];
+    vwFullText: string[];
+    vwFullDuration: number[];
+    vwCharOffset: number[];
+    vwStartMs: number[];
+    vwEndMs: number[];
+  }> | null = null;
 
   // Active line tracking
   private activeLineIds: Set<string> = new Set();
@@ -1602,6 +1648,7 @@ export class AmLyrics extends LitElement {
     this.currentSourceIndex = 0;
     this.isFetchingAlternatives = false;
     this.hasFetchedAllProviders = false;
+    this._updateFooter();
     try {
       const resolvedMetadata = await this.resolveSongMetadata();
       // If a newer fetch was triggered while we awaited, bail out
@@ -1678,6 +1725,7 @@ export class AmLyrics extends LitElement {
             s.source === 'Tidal' ||
             s.source === 'Genius',
         );
+      this._updateFooter();
 
       if (collectedSources.length > 0) {
         this.availableSources = AmLyrics.mergeAndSortSources(collectedSources);
@@ -1803,6 +1851,7 @@ export class AmLyrics extends LitElement {
 
     if (!this.hasFetchedAllProviders) {
       this.isFetchingAlternatives = true;
+      this._updateFooter();
       try {
         const resolvedMetadata = await this.resolveSongMetadata();
         if (resolvedMetadata?.metadata) {
@@ -1865,6 +1914,7 @@ export class AmLyrics extends LitElement {
       } finally {
         this.hasFetchedAllProviders = true;
         this.isFetchingAlternatives = false;
+        this._updateFooter();
       }
     }
 
@@ -3135,15 +3185,11 @@ export class AmLyrics extends LitElement {
     const linesChanged = !AmLyrics.arraysEqual(newActiveLines, oldActiveLines);
 
     if (linesChanged || isSeek) {
-      // Imperatively manage 'active' class so that scroll-animate and other
-      // imperative classes are never clobbered.
       if (this.lyricsContainer) {
         // Remove 'active' from lines that are no longer active
         for (const lineIndex of oldActiveLines) {
           if (!newActiveLines.includes(lineIndex)) {
-            const lineElement = this.lyricsContainer.querySelector(
-              `#lyrics-line-${lineIndex}`,
-            ) as HTMLElement;
+            const lineElement = this._getLineElement(lineIndex);
             if (lineElement) {
               lineElement.classList.remove('active');
               AmLyrics.resetSyllables(lineElement);
@@ -3153,12 +3199,10 @@ export class AmLyrics extends LitElement {
         // Add 'active' to newly active lines
         for (const lineIndex of newActiveLines) {
           if (!oldActiveLines.includes(lineIndex)) {
-            const lineElement = this.lyricsContainer.querySelector(
-              `#lyrics-line-${lineIndex}`,
-            ) as HTMLElement;
+            const lineElement = this._getLineElement(lineIndex);
             if (lineElement) {
               lineElement.classList.add('active');
-              lineElement.classList.remove('pre-active'); // Cleanup pre-active when fully active
+              lineElement.classList.remove('pre-active');
             }
           }
         }
@@ -3170,17 +3214,13 @@ export class AmLyrics extends LitElement {
 
       this.startAnimationFromTime(newTime);
 
-      // Trigger scroll imperatively (was previously in updated() via @state)
       this._handleActiveLineScroll(oldActiveLines, isSeek);
     }
 
-    // YouLyPlus-style syllable animation updates
     if (this.lyricsContainer) {
-      // Update syllables in active lines
+      // Update syllables in active lines using cached elements
       for (const lineIndex of this.activeLineIndices) {
-        const lineElement = this.lyricsContainer.querySelector(
-          `#lyrics-line-${lineIndex}`,
-        ) as HTMLElement;
+        const lineElement = this._getLineElement(lineIndex);
         if (lineElement) {
           AmLyrics.updateSyllablesForLine(lineElement, newTime);
         }
@@ -3193,62 +3233,91 @@ export class AmLyrics extends LitElement {
         AmLyrics.updateSyllablesForLine(gapLine as HTMLElement, newTime);
       });
 
-      // Imperatively manage gap active state (template doesn't re-render on time changes)
-      const allGaps = this.lyricsContainer.querySelectorAll('.lyrics-gap');
-      allGaps.forEach(gap => {
-        const gapStartTime = parseFloat(
-          gap.getAttribute('data-start-time') || '0',
-        );
-        const gapEndTime = parseFloat(gap.getAttribute('data-end-time') || '0');
-        const shouldBeActive = newTime >= gapStartTime && newTime < gapEndTime;
-        const isActive = gap.classList.contains('active');
-        const isExiting = gap.classList.contains('gap-exiting');
-        // Start exit animation early so it completes before the next lyric
-        const exitLeadMs = GAP_EXIT_LEAD_MS;
-        const shouldStartExiting =
-          isActive && !isExiting && newTime >= gapEndTime - exitLeadMs;
+      // Imperatively manage gap active state
+      if (this.gapElementCache.size > 0) {
+        for (const [, gap] of this.gapElementCache) {
+          const gapStartTime = parseFloat(
+            gap.getAttribute('data-start-time') || '0',
+          );
+          const gapEndTime = parseFloat(
+            gap.getAttribute('data-end-time') || '0',
+          );
+          const shouldBeActive =
+            newTime >= gapStartTime && newTime < gapEndTime;
+          const isActive = gap.classList.contains('active');
+          const isExiting = gap.classList.contains('gap-exiting');
+          const exitLeadMs = GAP_EXIT_LEAD_MS;
+          const shouldStartExiting =
+            isActive && !isExiting && newTime >= gapEndTime - exitLeadMs;
 
-        if (shouldBeActive && !isActive && !isExiting) {
-          // Entering gap: remove any leftover exit state, add active
-          gap.classList.remove('gap-exiting');
-          gap.classList.add('active');
-          // Mark dots whose time has already passed as finished, and
-          // trigger highlight on the dot currently in its time window
-          // so the first dot always lights up even on late load.
-          const dotSyllables = gap.querySelectorAll('.lyrics-syllable');
-          dotSyllables.forEach(dot => {
-            const dotStart = parseFloat(
-              dot.getAttribute('data-start-time') || '0',
-            );
-            const dotEnd = parseFloat(dot.getAttribute('data-end-time') || '0');
-            if (newTime > dotEnd) {
-              dot.classList.add('finished');
-              // Also ensure the highlight + animation fired so CSS state is correct
-              if (!dot.classList.contains('highlight')) {
+          if (shouldBeActive && !isActive && !isExiting) {
+            gap.classList.remove('gap-exiting');
+            gap.classList.add('active');
+            const dotSyllables = gap.querySelectorAll('.lyrics-syllable');
+            dotSyllables.forEach(dot => {
+              const dotStart = parseFloat(
+                dot.getAttribute('data-start-time') || '0',
+              );
+              const dotEnd = parseFloat(
+                dot.getAttribute('data-end-time') || '0',
+              );
+              if (newTime > dotEnd) {
+                dot.classList.add('finished');
+                if (!dot.classList.contains('highlight')) {
+                  AmLyrics.updateSyllableAnimation(dot as HTMLElement);
+                }
+              } else if (newTime >= dotStart && newTime <= dotEnd) {
                 AmLyrics.updateSyllableAnimation(dot as HTMLElement);
               }
-            } else if (newTime >= dotStart && newTime <= dotEnd) {
-              // Currently within this dot's window — trigger its highlight
-              AmLyrics.updateSyllableAnimation(dot as HTMLElement);
-            }
-          });
-        } else if (shouldStartExiting) {
-          // Exiting gap: keep visible while dots animate out
-          gap.classList.add('gap-exiting');
-          gap.classList.remove('active');
-          // After exit animation completes, remove gap-exiting to collapse
-          setTimeout(() => {
+            });
+          } else if (shouldStartExiting) {
+            gap.classList.add('gap-exiting');
+            gap.classList.remove('active');
+            setTimeout(() => {
+              gap.classList.remove('gap-exiting');
+            }, GAP_EXIT_LEAD_MS);
+          } else if (isActive && !shouldBeActive) {
+            gap.classList.remove('active');
             gap.classList.remove('gap-exiting');
-          }, GAP_EXIT_LEAD_MS);
-        } else if (isActive && !shouldBeActive) {
-          // NEW: Immediate cleanup if we seeked out of valid range
-          gap.classList.remove('active');
-          gap.classList.remove('gap-exiting');
-        } else if (isExiting && newTime < gapEndTime - exitLeadMs) {
-          // NEW: Cleanup exiting state if we seeked backwards before exit window
-          gap.classList.remove('gap-exiting');
+          } else if (isExiting && newTime < gapEndTime - exitLeadMs) {
+            gap.classList.remove('gap-exiting');
+          }
         }
-      });
+      } else if (this.lyricsContainer) {
+        // Fallback: no cache yet, use querySelectorAll
+        const allGaps = this.lyricsContainer.querySelectorAll('.lyrics-gap');
+        allGaps.forEach(gap => {
+          const gapStartTime = parseFloat(
+            gap.getAttribute('data-start-time') || '0',
+          );
+          const gapEndTime = parseFloat(
+            gap.getAttribute('data-end-time') || '0',
+          );
+          const shouldBeActive =
+            newTime >= gapStartTime && newTime < gapEndTime;
+          const isActive = gap.classList.contains('active');
+          const isExiting = gap.classList.contains('gap-exiting');
+          const exitLeadMs = GAP_EXIT_LEAD_MS;
+          const shouldStartExiting =
+            isActive && !isExiting && newTime >= gapEndTime - exitLeadMs;
+
+          if (shouldBeActive && !isActive && !isExiting) {
+            gap.classList.remove('gap-exiting');
+            gap.classList.add('active');
+          } else if (shouldStartExiting) {
+            gap.classList.add('gap-exiting');
+            gap.classList.remove('active');
+            setTimeout(() => {
+              gap.classList.remove('gap-exiting');
+            }, GAP_EXIT_LEAD_MS);
+          } else if (isActive && !shouldBeActive) {
+            gap.classList.remove('active');
+            gap.classList.remove('gap-exiting');
+          } else if (isExiting && newTime < gapEndTime - exitLeadMs) {
+            gap.classList.remove('gap-exiting');
+          }
+        });
+      }
 
       // Track instrumental gap state
       const currentGap = this.findInstrumentalGapAt(newTime);
@@ -3271,9 +3340,7 @@ export class AmLyrics extends LitElement {
           const line = this.lyrics[i];
           const timeUntilStart = line.timestamp - newTime;
 
-          const nextLineEl = this.lyricsContainer.querySelector(
-            `#lyrics-line-${i}`,
-          ) as HTMLElement;
+          const nextLineEl = this._getLineElement(i);
 
           const isBackToBack = this.activeLineIndices.length > 0;
           const leadTime = isBackToBack
@@ -3281,16 +3348,14 @@ export class AmLyrics extends LitElement {
             : PRE_SCROLL_LEAD_MS;
 
           if (timeUntilStart > leadTime) {
-            break; // Lines are ordered by timestamp, no need to check further
+            break;
           }
 
           if (timeUntilStart > 0 && timeUntilStart <= leadTime) {
-            // Time to pre-scroll and pre-activate!
             if (nextLineEl) {
               preActiveLineIndex = i;
 
               if (!isBackToBack) {
-                // Apply unblur & zoom effect ahead of lyric start only if no line is currently active
                 nextLineEl.classList.add('pre-active');
               }
               this.clearPreActiveClasses(i);
@@ -3316,6 +3381,9 @@ export class AmLyrics extends LitElement {
 
   updated(changedProperties: Map<string | number | symbol, unknown>) {
     if (changedProperties.has('lyrics')) {
+      this._invalidateCaches();
+      this._ensureLineDataCache();
+      this._updateCachedIsUnsynced();
       // Recalculate timing data for accurate animations whenever lyrics change
       this._updateCharTimingData();
 
@@ -3325,9 +3393,7 @@ export class AmLyrics extends LitElement {
       if (this.lyricsContainer && this.lyrics) {
         const activeLines = this.findActiveLineIndices(this.currentTime);
         for (const lineIndex of activeLines) {
-          const lineEl = this.lyricsContainer.querySelector(
-            `#lyrics-line-${lineIndex}`,
-          ) as HTMLElement;
+          const lineEl = this._getLineElement(lineIndex);
           if (lineEl) lineEl.classList.add('active');
         }
       }
@@ -3343,7 +3409,7 @@ export class AmLyrics extends LitElement {
       this.backgroundWordProgress.clear();
       this.mainWordAnimations.clear();
       this.backgroundWordAnimations.clear();
-      this.isUserScrolling = false;
+      this.setUserScrolling(false);
 
       // Cancel any running animations
       if (this.animationFrameId) {
@@ -3402,9 +3468,7 @@ export class AmLyrics extends LitElement {
     );
     if (targetLineIndex === null) return;
 
-    const targetLine = this.lyricsContainer.querySelector(
-      `#lyrics-line-${targetLineIndex}`,
-    ) as HTMLElement;
+    const targetLine = this._getLineElement(targetLineIndex);
 
     if (targetLine) {
       this.focusLine(targetLine, forceScroll);
@@ -3429,8 +3493,166 @@ export class AmLyrics extends LitElement {
     return 0;
   }
 
+  private _rebuildDomCache() {
+    if (!this.lyricsContainer) return;
+
+    this.lineElementCache.clear();
+    this.gapElementCache.clear();
+
+    if (!this.lyrics) return;
+
+    for (let i = 0; i < this.lyrics.length; i += 1) {
+      const lineEl = this.lyricsContainer.querySelector(
+        `#lyrics-line-${i}`,
+      ) as HTMLElement | null;
+      if (lineEl) this.lineElementCache.set(i, lineEl);
+
+      const gapEl = this.lyricsContainer.querySelector(
+        `#gap-${i}`,
+      ) as HTMLElement | null;
+      if (gapEl) this.gapElementCache.set(i, gapEl);
+    }
+  }
+
+  private _getLineElement(index: number): HTMLElement | null {
+    const cached = this.lineElementCache.get(index);
+    if (cached) return cached;
+    if (!this.lyricsContainer) return null;
+    const el = this.lyricsContainer.querySelector(
+      `#lyrics-line-${index}`,
+    ) as HTMLElement | null;
+    if (el) this.lineElementCache.set(index, el);
+    return el;
+  }
+
+  private _getGapElement(index: number): HTMLElement | null {
+    const cached = this.gapElementCache.get(index);
+    if (cached) return cached;
+    if (!this.lyricsContainer) return null;
+    const el = this.lyricsContainer.querySelector(
+      `#gap-${index}`,
+    ) as HTMLElement | null;
+    if (el) this.gapElementCache.set(index, el);
+    return el;
+  }
+
+  private _invalidateCaches() {
+    this.cachedAllGaps = [];
+    this.cachedIsUnsynced = false;
+    this.cachedLineData = null;
+    this.lineElementCache.clear();
+    this.gapElementCache.clear();
+  }
+
+  private _updateCachedIsUnsynced() {
+    this.cachedIsUnsynced =
+      this.lyrics && this.lyrics.length > 0
+        ? this.lyrics.every(l => l.timestamp === 0 && l.endtime === 0)
+        : false;
+  }
+
+  private _ensureLineDataCache() {
+    if (this.cachedLineData || !this.lyrics) return;
+
+    this.cachedLineData = this.lyrics.map(line => {
+      const wordGroups: Syllable[][] = [];
+      for (const syllable of line.text) {
+        if (syllable.part && wordGroups.length > 0) {
+          wordGroups[wordGroups.length - 1].push(syllable);
+        } else {
+          wordGroups.push([syllable]);
+        }
+      }
+
+      const groupGrowable: boolean[] = new Array(wordGroups.length).fill(false);
+      const groupGlowing: boolean[] = new Array(wordGroups.length).fill(false);
+      const vwFullText: string[] = new Array(wordGroups.length).fill('');
+      const vwFullDuration: number[] = new Array(wordGroups.length).fill(0);
+      const vwCharOffset: number[] = new Array(wordGroups.length).fill(0);
+      const vwStartMs: number[] = new Array(wordGroups.length).fill(0);
+      const vwEndMs: number[] = new Array(wordGroups.length).fill(0);
+
+      let vwStart = 0;
+      while (vwStart < wordGroups.length) {
+        let vwEnd = vwStart;
+        while (vwEnd < wordGroups.length - 1) {
+          const grp = wordGroups[vwEnd];
+          const lastText = grp[grp.length - 1].text;
+          if (/\s$/.test(lastText)) break;
+          vwEnd += 1;
+        }
+
+        const combinedText = wordGroups
+          .slice(vwStart, vwEnd + 1)
+          .flatMap(g => g.map(s => s.text))
+          .join('')
+          .trim();
+        const combinedStart = wordGroups[vwStart][0].timestamp;
+        const lastGrp = wordGroups[vwEnd];
+        const combinedEnd = lastGrp[lastGrp.length - 1].endtime;
+        const combinedDuration = combinedEnd - combinedStart;
+
+        const isCJK =
+          /[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]/.test(
+            combinedText,
+          );
+        const isRTL =
+          /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\u0590-\u05FF]/.test(
+            combinedText,
+          );
+        const hasHyphen = combinedText.includes('-');
+
+        const wordLen = combinedText.length;
+        let isGrowableVW =
+          !isCJK && !isRTL && !hasHyphen && wordLen > 0 && wordLen <= 12;
+        if (isGrowableVW) {
+          if (wordLen < 3) {
+            isGrowableVW =
+              combinedDuration >= 1110 && combinedDuration >= wordLen * 550;
+          } else {
+            isGrowableVW =
+              combinedDuration >= 850 && combinedDuration >= wordLen * 200;
+          }
+        }
+
+        const isGlowingVW =
+          isGrowableVW &&
+          combinedDuration >= 1000 &&
+          combinedDuration >= combinedText.length * 250;
+
+        let charOff = 0;
+        for (let gi = vwStart; gi <= vwEnd; gi += 1) {
+          groupGrowable[gi] = isGrowableVW;
+          groupGlowing[gi] = isGlowingVW;
+          vwFullText[gi] = combinedText;
+          vwFullDuration[gi] = combinedDuration;
+          vwCharOffset[gi] = charOff;
+          vwStartMs[gi] = combinedStart;
+          vwEndMs[gi] = combinedEnd;
+          const grpText = wordGroups[gi].map(s => s.text).join('');
+          charOff += grpText.replace(/\s/g, '').length;
+        }
+
+        vwStart = vwEnd + 1;
+      }
+
+      return {
+        wordGroups,
+        groupGrowable,
+        groupGlowing,
+        vwFullText,
+        vwFullDuration,
+        vwCharOffset,
+        vwStartMs,
+        vwEndMs,
+      };
+    });
+  }
+
   private _updateCharTimingData() {
     if (!this.shadowRoot) return;
+
+    this._rebuildDomCache();
 
     // Get the computed font from the first syllable to ensure accuracy
     const referenceSyllable = this.shadowRoot.querySelector('.lyrics-syllable');
@@ -3586,6 +3808,15 @@ export class AmLyrics extends LitElement {
     }
   }
 
+  private setUserScrolling(value: boolean) {
+    this.isUserScrolling = value;
+    if (value) {
+      this.lyricsContainer?.classList.add('user-scrolling');
+    } else {
+      this.lyricsContainer?.classList.remove('user-scrolling');
+    }
+  }
+
   private handleUserScroll() {
     // Ignore programmatic scrolls and click-seek scrolls
     if (this.isProgrammaticScroll || this.isClickSeeking) {
@@ -3593,8 +3824,7 @@ export class AmLyrics extends LitElement {
     }
 
     // Mark that user is currently scrolling
-    this.isUserScrolling = true;
-    this.lyricsContainer?.classList.add('user-scrolling');
+    this.setUserScrolling(true);
 
     // Clear any existing timeout
     if (this.userScrollTimeoutId) {
@@ -3603,7 +3833,7 @@ export class AmLyrics extends LitElement {
 
     // Set timeout to re-enable auto-scroll after 2 seconds of no scrolling
     this.userScrollTimeoutId = window.setTimeout(() => {
-      this.isUserScrolling = false;
+      this.setUserScrolling(false);
       this.userScrollTimeoutId = undefined;
 
       // Optionally scroll back to current active line when re-enabling auto-scroll
@@ -3614,20 +3844,16 @@ export class AmLyrics extends LitElement {
   }
 
   private findActiveLineIndices(time: number): number[] {
-    if (!this.lyrics) return [];
+    if (!this.lyrics || this.lyrics.length === 0) return [];
     const activeLines: number[] = [];
+
     for (let i = 0; i < this.lyrics.length; i += 1) {
       const line = this.lyrics[i];
       let effectiveEndTime = line.endtime;
 
-      // Extend the "active" highlight window to abut the next line,
-      // leaving a 500ms gap for breathing/scrolling
       if (i < this.lyrics.length - 1) {
         const nextLineStart = this.lyrics[i + 1].timestamp;
         const gapDuration = nextLineStart - line.endtime;
-
-        // If the gap is large enough to trigger the breathing dots,
-        // DO NOT extend the highlight. The text should dim when the dots appear.
         if (gapDuration < INSTRUMENTAL_THRESHOLD_MS) {
           if (effectiveEndTime < nextLineStart) {
             effectiveEndTime = Math.max(effectiveEndTime, nextLineStart - 500);
@@ -3635,6 +3861,7 @@ export class AmLyrics extends LitElement {
         }
       }
 
+      if (line.timestamp > time) break;
       if (time >= line.timestamp && time <= effectiveEndTime) {
         activeLines.push(i);
       }
@@ -3684,6 +3911,7 @@ export class AmLyrics extends LitElement {
     gapStart: number;
     gapEnd: number;
   }> {
+    if (this.cachedAllGaps.length > 0) return this.cachedAllGaps;
     if (!this.lyrics || this.lyrics.length === 0) return [];
     const gaps: Array<{
       insertBeforeIndex: number;
@@ -3708,6 +3936,7 @@ export class AmLyrics extends LitElement {
       }
     }
 
+    this.cachedAllGaps = gaps;
     return gaps;
   }
 
@@ -3897,7 +4126,7 @@ export class AmLyrics extends LitElement {
       clearTimeout(this.userScrollTimeoutId);
       this.userScrollTimeoutId = undefined;
     }
-    this.isUserScrolling = false;
+    this.setUserScrolling(false);
 
     // Reset active line tracking to prevent scroll fighting
     this.currentPrimaryActiveLine = null;
@@ -4288,7 +4517,7 @@ export class AmLyrics extends LitElement {
 
     this.lyricsContainer.classList.remove('not-focused', 'user-scrolling');
     this.isProgrammaticScroll = true;
-    this.isUserScrolling = false;
+    this.setUserScrolling(false);
 
     if (this.userScrollTimeoutId) {
       clearTimeout(this.userScrollTimeoutId);
@@ -4888,10 +5117,7 @@ export class AmLyrics extends LitElement {
 
     const sourceLabel = this.lyricsSource ?? 'Unavailable';
 
-    const isUnsynced =
-      this.lyrics && this.lyrics.length > 0
-        ? this.lyrics.every(l => l.timestamp === 0 && l.endtime === 0)
-        : false;
+    const isUnsynced = this.cachedIsUnsynced;
 
     const renderContent = () => {
       if (this.isLoading) {
@@ -4977,104 +5203,13 @@ export class AmLyrics extends LitElement {
         // translation/romanization block for background — it would just duplicate
         // the main line's text.
 
-        // Group syllables by word: when part=true, append to previous word group
-        const wordGroups: Syllable[][] = [];
-        for (const syllable of line.text) {
-          if (syllable.part && wordGroups.length > 0) {
-            // Continuation of previous word
-            wordGroups[wordGroups.length - 1].push(syllable);
-          } else {
-            // New word
-            wordGroups.push([syllable]);
-          }
-        }
-
-        // Pre-compute isGrowable per "visual word": adjacent groups whose text
-        // doesn't end with whitespace form one visual word (e.g. "a"+"live" = "alive").
-        // We evaluate growable on the combined text/duration, then propagate
-        // the result to each individual group so it renders through the
-        // single-syllable path (which supports char-level glow).
-        const groupGrowable: boolean[] = new Array(wordGroups.length).fill(
-          false,
-        );
-        const groupGlowing: boolean[] = new Array(wordGroups.length).fill(
-          false,
-        );
-        // Visual word info for growable char-level glow:
-        // Each group stores the combined visual word's text, duration, and
-        // the char offset of this group within the visual word.
-        const vwFullText: string[] = new Array(wordGroups.length).fill('');
-        const vwFullDuration: number[] = new Array(wordGroups.length).fill(0);
-        const vwCharOffset: number[] = new Array(wordGroups.length).fill(0);
-        const vwStartMs: number[] = new Array(wordGroups.length).fill(0);
-        const vwEndMs: number[] = new Array(wordGroups.length).fill(0);
-        {
-          let vwStart = 0;
-          while (vwStart < wordGroups.length) {
-            let vwEnd = vwStart;
-            while (vwEnd < wordGroups.length - 1) {
-              const grp = wordGroups[vwEnd];
-              const lastText = grp[grp.length - 1].text;
-              if (/\s$/.test(lastText)) break;
-              vwEnd += 1;
-            }
-
-            // Compute combined properties for this visual word
-            const combinedText = wordGroups
-              .slice(vwStart, vwEnd + 1)
-              .flatMap(g => g.map(s => s.text))
-              .join('')
-              .trim();
-            const combinedStart = wordGroups[vwStart][0].timestamp;
-            const lastGrp = wordGroups[vwEnd];
-            const combinedEnd = lastGrp[lastGrp.length - 1].endtime;
-            const combinedDuration = combinedEnd - combinedStart;
-
-            const isCJK =
-              /[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]/.test(
-                combinedText,
-              );
-            const isRTL =
-              /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\u0590-\u05FF]/.test(
-                combinedText,
-              );
-            const hasHyphen = combinedText.includes('-');
-
-            const wordLen = combinedText.length;
-            let isGrowableVW =
-              !isCJK && !isRTL && !hasHyphen && wordLen > 0 && wordLen <= 12;
-            if (isGrowableVW) {
-              if (wordLen < 3) {
-                isGrowableVW =
-                  combinedDuration >= 1110 && combinedDuration >= wordLen * 550;
-              } else {
-                isGrowableVW =
-                  combinedDuration >= 850 && combinedDuration >= wordLen * 200;
-              }
-            }
-
-            // Glow requirement (more strict)
-            const isGlowingVW =
-              isGrowableVW &&
-              combinedDuration >= 1000 &&
-              combinedDuration >= combinedText.length * 250;
-
-            let charOff = 0;
-            for (let gi = vwStart; gi <= vwEnd; gi += 1) {
-              groupGrowable[gi] = isGrowableVW;
-              groupGlowing[gi] = isGlowingVW;
-              vwFullText[gi] = combinedText;
-              vwFullDuration[gi] = combinedDuration;
-              vwCharOffset[gi] = charOff;
-              vwStartMs[gi] = combinedStart;
-              vwEndMs[gi] = combinedEnd;
-              const grpText = wordGroups[gi].map(s => s.text).join('');
-              charOff += grpText.replace(/\s/g, '').length;
-            }
-
-            vwStart = vwEnd + 1;
-          }
-        }
+        const lineData = this.cachedLineData?.[lineIndex];
+        const wordGroups = lineData?.wordGroups ?? [];
+        const groupGrowable = lineData?.groupGrowable ?? [];
+        const groupGlowing = lineData?.groupGlowing ?? [];
+        const vwFullText = lineData?.vwFullText ?? [];
+        const vwFullDuration = lineData?.vwFullDuration ?? [];
+        const vwCharOffset = lineData?.vwCharOffset ?? [];
 
         // Create main vocals using YouLyPlus syllable structure
         const mainVocalElement = html`<p class="main-vocal-container">
@@ -5350,9 +5485,7 @@ export class AmLyrics extends LitElement {
       <div
         class="lyrics-container ${isUnsynced
           ? 'is-unsynced'
-          : 'blur-inactive-enabled'} ${this.isUserScrolling
-          ? 'user-scrolling'
-          : ''}"
+          : 'blur-inactive-enabled'}"
       >
         ${!this.isLoading && this.lyrics && this.lyrics.length > 0
           ? html`
@@ -5467,17 +5600,15 @@ export class AmLyrics extends LitElement {
                     !this.hasFetchedAllProviders
                       ? html`
                           <button
-                            class="download-button"
+                            class="download-button source-switch-btn"
                             title="Switch Lyrics Source"
                             style="font-family: inherit; font-size: 11px; padding: 2px 6px; border-radius: 4px; border: 1px solid rgba(255, 255, 255, 0.2); background: transparent; cursor: pointer; color: #aaa; display: inline-flex; align-items: center;"
                             @click=${this.switchSource}
                             ?disabled=${this.isFetchingAlternatives}
                           >
                             <svg
-                              style="margin-right: 4px; ${this
-                                .isFetchingAlternatives
-                                ? 'animation: spin 1s linear infinite;'
-                                : ''}"
+                              class="source-switch-svg lucide lucide-arrow-down-up-icon lucide-arrow-down-up"
+                              style="margin-right: 4px;"
                               xmlns="http://www.w3.org/2000/svg"
                               width="12"
                               height="12"
@@ -5487,7 +5618,6 @@ export class AmLyrics extends LitElement {
                               stroke-width="2"
                               stroke-linecap="round"
                               stroke-linejoin="round"
-                              class="lucide lucide-arrow-down-up-icon lucide-arrow-down-up"
                             >
                               ${this.isFetchingAlternatives
                                 ? svg`<path
@@ -5498,9 +5628,11 @@ export class AmLyrics extends LitElement {
                                     ><path d="m21 8-4-4-4 4"></path
                                     ><path d="M17 4v16"></path>`}
                             </svg>
-                            ${this.isFetchingAlternatives
-                              ? 'Switching...'
-                              : 'Switch'}
+                            <span class="source-switch-label"
+                              >${this.isFetchingAlternatives
+                                ? 'Switching...'
+                                : 'Switch'}</span
+                            >
                           </button>
                         `
                       : ''}
