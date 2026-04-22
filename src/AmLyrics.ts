@@ -2,7 +2,7 @@ import { css, html, LitElement, svg } from 'lit';
 import { property, query, state } from 'lit/decorators.js';
 import { GoogleService } from './GoogleService.js';
 
-const VERSION = '1.2.8';
+const VERSION = '1.2.9';
 const INSTRUMENTAL_THRESHOLD_MS = 7000; // Show dots for gaps >= 7s
 const FETCH_TIMEOUT_MS = 8000; // Timeout for all lyrics fetch requests
 const SEEK_THRESHOLD_MS = 500;
@@ -3469,10 +3469,31 @@ export class AmLyrics extends LitElement {
     if (targetLineIndex === null) return;
 
     const targetLine = this._getLineElement(targetLineIndex);
+    if (!targetLine) return;
 
-    if (targetLine) {
-      this.focusLine(targetLine, forceScroll);
+    // Only scroll snappily when lines are essentially back-to-back.
+    // If there is any noticeable gap between them, scroll slower.
+    let scrollDuration: number | undefined;
+    const prevPrimaryIndex = AmLyrics.getLineIndexFromElement(
+      this.currentPrimaryActiveLine,
+    );
+    if (
+      prevPrimaryIndex !== null &&
+      targetLineIndex > prevPrimaryIndex &&
+      this.lyrics
+    ) {
+      const gap =
+        this.lyrics[targetLineIndex].timestamp -
+        this.lyrics[prevPrimaryIndex].endtime;
+      if (gap > 200) {
+        scrollDuration = Math.min(
+          Math.max(gap * 0.6, SCROLL_ANIMATION_DURATION_MS),
+          2000,
+        );
+      }
     }
+
+    this.focusLine(targetLine, forceScroll, scrollDuration);
   }
 
   private _textWidthCanvas: HTMLCanvasElement | undefined;
@@ -3608,17 +3629,14 @@ export class AmLyrics extends LitElement {
         if (isGrowableVW) {
           if (wordLen < 3) {
             isGrowableVW =
-              combinedDuration >= 1110 && combinedDuration >= wordLen * 550;
+              combinedDuration >= 1000 && combinedDuration >= wordLen * 500;
           } else {
             isGrowableVW =
-              combinedDuration >= 850 && combinedDuration >= wordLen * 200;
+              combinedDuration >= 800 && combinedDuration >= wordLen * 180;
           }
         }
 
-        const isGlowingVW =
-          isGrowableVW &&
-          combinedDuration >= 1000 &&
-          combinedDuration >= combinedText.length * 250;
+        const isGlowingVW = isGrowableVW;
 
         let charOff = 0;
         for (let gi = vwStart; gi <= vwEnd; gi += 1) {
@@ -5203,6 +5221,10 @@ export class AmLyrics extends LitElement {
         // translation/romanization block for background — it would just duplicate
         // the main line's text.
 
+        const bgPlacement = hasBackground
+          ? AmLyrics.getBackgroundTextPlacement(line)
+          : 'after';
+
         const lineData = this.cachedLineData?.[lineIndex];
         const wordGroups = lineData?.wordGroups ?? [];
         const groupGrowable = lineData?.groupGrowable ?? [];
@@ -5473,7 +5495,9 @@ export class AmLyrics extends LitElement {
             }}
           >
             <div class="lyrics-line-container">
-              ${mainVocalElement} ${backgroundVocalElement}
+              ${bgPlacement === 'before' ? backgroundVocalElement : ''}
+              ${mainVocalElement}
+              ${bgPlacement === 'after' ? backgroundVocalElement : ''}
               ${translationElement} ${lineRomanizationElement}
             </div>
           </div>
