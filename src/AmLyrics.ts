@@ -2,7 +2,7 @@ import { css, html, LitElement, svg } from 'lit';
 import { property, query, state } from 'lit/decorators.js';
 import { GoogleService } from './GoogleService.js';
 
-const VERSION = '1.2.9';
+const VERSION = '1.3.0';
 const INSTRUMENTAL_THRESHOLD_MS = 7000; // Show dots for gaps >= 7s
 const FETCH_TIMEOUT_MS = 8000; // Timeout for all lyrics fetch requests
 const SEEK_THRESHOLD_MS = 500;
@@ -3629,10 +3629,10 @@ export class AmLyrics extends LitElement {
         if (isGrowableVW) {
           if (wordLen < 3) {
             isGrowableVW =
-              combinedDuration >= 1000 && combinedDuration >= wordLen * 500;
+              combinedDuration >= 1050 && combinedDuration >= wordLen * 525;
           } else {
             isGrowableVW =
-              combinedDuration >= 800 && combinedDuration >= wordLen * 180;
+              combinedDuration >= 850 && combinedDuration >= wordLen * 190;
           }
         }
 
