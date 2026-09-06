@@ -3429,7 +3429,7 @@ babel-plugin-polyfill-regenerator@^0.6.5, babel-plugin-polyfill-regenerator@^0.6
   dependencies:
     "@babel/helper-define-polyfill-provider" "^0.6.6"
 
-babel-plugin-template-html-minifier@^4.0.0:
+babel-plugin-template-html-minifier@^4.0.0, babel-plugin-template-html-minifier@^4.1.0:
   version "4.1.0"
   resolved "https://registry.npmjs.org/babel-plugin-template-html-minifier/-/babel-plugin-template-html-minifier-4.1.0.tgz"
   integrity sha512-fyuqn/SEPG68v+YUrBehOhQ81fxlu1A3YPATo3XXTNTsYsUFejRNNFTdQk5vkramMYy7/9XKIXIwsnB0VVvVTg==
@@ -6376,7 +6376,7 @@ lightningcss-linux-x64-musl@1.30.1:
   resolved "https://registry.npmjs.org/lightningcss-linux-x64-musl/-/lightningcss-linux-x64-musl-1.30.1.tgz"
   integrity sha512-rRomAK7eIkL+tHY0YPxbc5Dra2gXlI63HL+v1Pdi1a3sC+tJTcFrHX+E86sulgAXeI7rSzDYhPSeHHjqFhqfeQ==
 
-lightningcss@^1.24.0:
+lightningcss@^1.24.0, lightningcss@^1.30.1:
   version "1.30.1"
   resolved "https://registry.npmjs.org/lightningcss/-/lightningcss-1.30.1.tgz"
   integrity sha512-xi6IyHML+c9+Q3W0S4fCQJOym42pyurFiJUHEcEyHS0CeKzia4yZDEsLlqOFykxOdHpNy0NmvVO31vcSqAxJCg==

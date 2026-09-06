@@ -1,6 +1,7 @@
 import resolve from '@rollup/plugin-node-resolve'
 import typescript from '@rollup/plugin-typescript'
 import babel from '@rollup/plugin-babel'
+import { transform } from 'lightningcss'
 
 const PACKAGE_ROOT_PATH = process.cwd()
 
@@ -10,9 +11,35 @@ const commonPlugins = [
     tsconfig: `./tsconfig.json`
   }),
   babel({
+    babelrc: false,
+    configFile: false,
     exclude: 'node_modules/**',
-    rootMode: 'upward',
-    babelHelpers: 'runtime'
+    extensions: ['.ts', '.tsx'],
+    babelHelpers: 'bundled',
+    plugins: [
+      [
+        'template-html-minifier',
+        {
+          modules: {
+            lit: ['html', { name: 'css', encapsulation: 'style' }]
+          },
+          htmlMinifier: {
+            collapseWhitespace: true,
+            conservativeCollapse: true,
+            removeComments: true,
+            caseSensitive: true,
+            minifyCSS: (source, type) =>
+              type
+                ? source
+                : transform({
+                    filename: 'component.css',
+                    code: Buffer.from(source),
+                    minify: true
+                  }).code.toString()
+          }
+        }
+      ]
+    ]
   })
 ];
 
