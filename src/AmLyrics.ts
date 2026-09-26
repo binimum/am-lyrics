@@ -2,7 +2,7 @@ import { css, html, LitElement, svg } from 'lit';
 import { property, query, state } from 'lit/decorators.js';
 import { GoogleService } from './GoogleService.js';
 
-const VERSION = '1.7.2';
+const VERSION = '1.7.3';
 const INSTRUMENTAL_THRESHOLD_MS = 7000; // Show dots for gaps >= 7s
 const FETCH_TIMEOUT_MS = 8000; // Timeout for all lyrics fetch requests
 const SEEK_THRESHOLD_MS = 500;
@@ -340,12 +340,7 @@ export class AmLyrics extends LitElement {
       padding: 0;
       box-sizing: border-box;
       color: color-mix(in srgb, var(--lyplus-text-secondary) 80%, transparent);
-      transition: height
-        var(
-          --background-vocal-exit-duration,
-          var(--am-lyrics-background-vocal-enter-duration)
-        )
-        cubic-bezier(0.22, 1, 0.36, 1);
+      /* Layout commits once; the line spring animates the displacement. */
       margin: 0;
       pointer-events: none;
     }
@@ -393,24 +388,6 @@ export class AmLyrics extends LitElement {
       transform: translateY(var(--background-vocal-offset, 6px))
         scale(var(--am-lyrics-background-vocal-scale));
       transition-duration: var(--background-vocal-exit-duration, 450ms);
-    }
-
-    .lyrics-line:is(.bg-expanded, .bg-collapsing) .main-vocal-container {
-      transition-duration: var(
-        --background-vocal-exit-duration,
-        var(--am-lyrics-background-vocal-enter-duration)
-      );
-      transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
-    }
-
-    .lyrics-line.bg-expanded.bg-after .main-vocal-container {
-      transform: translateY(
-        calc(0px - var(--am-lyrics-background-vocal-stack-shift))
-      );
-    }
-
-    .lyrics-line.bg-expanded.bg-before .main-vocal-container {
-      transform: translateY(var(--am-lyrics-background-vocal-stack-shift));
     }
 
     .background-vocal-container.background-after .background-vocal-wrap {
@@ -734,6 +711,10 @@ export class AmLyrics extends LitElement {
         color 0.5s;
     }
 
+    .lyrics-line .lyrics-word .lyrics-syllable.line-synced {
+      transform: none !important;
+    }
+
     /* --- Wipe Highlight Effect --- */
     .lyrics-line.active:not(.lyrics-gap) .lyrics-syllable.highlight.no-chars,
     .lyrics-line.active:not(.lyrics-gap)
@@ -933,6 +914,16 @@ export class AmLyrics extends LitElement {
       );
     }
 
+    /* CJK phrases need no spaces, so their virtual word can cover several
+       timed segments. Each supplied reading should wait for its own segment,
+       rather than rising with every other reading at the phrase's start.
+       Non-CJK split words retain their shared word motion. */
+    .lyrics-line.active:not(.lyrics-gap)
+      .lyrics-word.char-rise.word-started
+      .lyrics-syllable.transliteration:not(.highlight):not(.finished) {
+      transform: none;
+    }
+
     .lyrics-syllable.pre-highlight {
       animation-name: pre-wipe-universal;
       animation-duration: var(--pre-wipe-duration);
@@ -956,6 +947,20 @@ export class AmLyrics extends LitElement {
     .lyrics-line .lyrics-syllable.has-chars:not(.finished) {
       background-color: transparent;
       color: transparent;
+    }
+
+    .char-motion {
+      display: inline-block;
+      vertical-align: baseline;
+      transform-origin: 50% 80%;
+    }
+
+    .lyrics-syllable .char-motion > .char {
+      transform: none !important;
+    }
+
+    .reduced-motion .char-motion {
+      transform: none !important;
     }
 
     .lyrics-syllable span.char {
@@ -1092,10 +1097,7 @@ export class AmLyrics extends LitElement {
       transform-origin: top;
       content-visibility: visible !important;
       contain: none !important;
-      transition:
-        height var(--am-lyrics-instrumental-enter-duration)
-          cubic-bezier(0.41, 0, 0.12, 0.99),
-        transform var(--scroll-duration, 280ms) var(--lyrics-line-delay, 0ms);
+      transition: transform var(--scroll-duration, 280ms);
     }
 
     .lyrics-gap.active {
@@ -1103,20 +1105,14 @@ export class AmLyrics extends LitElement {
         var(--am-lyrics-instrumental-height) +
           var(--am-lyrics-instrumental-spacing)
       );
-      transition:
-        height var(--am-lyrics-instrumental-enter-duration)
-          cubic-bezier(0.41, 0, 0.12, 0.99),
-        transform var(--scroll-duration, 280ms);
+      transition: transform var(--scroll-duration, 280ms);
     }
 
     /* Reclaim the row from the first predictive-scroll frame, after the dot
        pop has finished, so the reflow and scroll share one curve. */
     .lyrics-gap.gap-collapsing {
       height: 0;
-      transition:
-        height var(--am-lyrics-instrumental-collapse-duration)
-          cubic-bezier(0.41, 0, 0.12, 0.99),
-        transform var(--scroll-duration, 280ms);
+      transition: transform var(--scroll-duration, 280ms);
     }
 
     .lyrics-gap .main-vocal-container {
@@ -1215,7 +1211,7 @@ export class AmLyrics extends LitElement {
     }
 
     .lyrics-gap .lyrics-syllable {
-      background-color: var(--lyplus-text-secondary);
+      background-color: var(--lyplus-text-primary);
       background-clip: unset;
       opacity: var(--gap-dot-opacity, 0.25);
     }
@@ -1950,6 +1946,10 @@ export class AmLyrics extends LitElement {
   @property({ type: Boolean })
   interpolate = true;
 
+  /** Keep provider-supplied alternates without requesting automatic Google fills. */
+  @property({ type: Boolean, attribute: 'no-auto-alternates' })
+  noAutoAlternates = false;
+
   /** Disable distance and predictive blur without changing lyric timing. */
   @property({ type: Boolean, attribute: 'no-blur', reflect: true })
   noBlur = false;
@@ -2061,12 +2061,122 @@ export class AmLyrics extends LitElement {
 
   private _currentTime = 0;
 
+  private rewindingLine: HTMLElement | null = null;
+
+  private rewindFrame = 0;
+
+  private rewindEffects: Array<{
+    animation: Animation;
+    from: number;
+    to: number;
+  }> = [];
+
+  private finishLineRewind(): void {
+    cancelAnimationFrame(this.rewindFrame);
+    this.rewindFrame = 0;
+    for (const { animation } of this.rewindEffects) {
+      if (
+        Number(animation.currentTime) <
+        Number(animation.effect?.getComputedTiming().endTime)
+      ) {
+        const time = animation.currentTime;
+        animation.play();
+        // play() rewinds negative local times to zero. Negative times are valid
+        // here because CSS wipes/glow may have started with a negative delay.
+        animation.currentTime = time;
+      }
+    }
+    this.rewindEffects = [];
+    this.rewindingLine = null;
+  }
+
+  private startLineRewind(line: HTMLElement, targetTime: number): void {
+    this.finishLineRewind();
+    this.rewindingLine = line;
+    // Use the existing painted pose, even when another rewind is interrupted.
+    // Only the short seek transition needs JS; normal playback stays compositor-driven.
+    line.getAnimations({ subtree: true }).forEach(animation => {
+      const effect = animation.effect as KeyframeEffect | null;
+      const target = effect?.target;
+      if (!(target instanceof HTMLElement)) return;
+      const name =
+        'animationName' in animation ? String(animation.animationName) : '';
+      const syllable = target.closest<HTMLElement>('.lyrics-syllable');
+      let to: number;
+      if (name.includes('wipe') && syllable) {
+        to =
+          targetTime -
+          Number(syllable.dataset.startTime) +
+          Number(effect!.getTiming().delay);
+      } else {
+        const char = target.classList.contains('char-motion')
+          ? target.querySelector<HTMLElement>('.char')
+          : target;
+        const entry = char && AmLyrics.characterAnimations.get(char);
+        if (!entry || (entry.animation !== animation && name !== 'char-glow'))
+          return;
+        to =
+          targetTime -
+          entry.start -
+          (name === 'char-glow' ? entry.glowEpoch : 0);
+      }
+      const end = Number(effect!.getComputedTiming().endTime);
+      this.rewindEffects.push({
+        animation,
+        from: Number(animation.currentTime || 0),
+        to: Math.min(to, end),
+      });
+      animation.pause();
+    });
+    line
+      .querySelectorAll('.lyrics-syllable.finished')
+      .forEach(syllable => syllable.classList.remove('finished'));
+    const started = performance.now();
+    const tick = (now: number) => {
+      const progress = Math.min(1, (now - started) / 260);
+      const eased = progress * progress * (3 - 2 * progress);
+      const playbackAdvance = this.currentTime - targetTime;
+      for (const { animation, from, to } of this.rewindEffects)
+        animation.currentTime = from + (to + playbackAdvance - from) * eased;
+      if (progress < 1) {
+        this.rewindFrame = requestAnimationFrame(tick);
+      } else {
+        this.finishLineRewind();
+        AmLyrics.updateSyllablesForLine(line, this.currentTime);
+      }
+    };
+    this.rewindFrame = requestAnimationFrame(tick);
+  }
+
   @property({ type: Number, attribute: 'currenttime', hasChanged: () => false })
   set currentTime(value: number) {
     const oldValue = this._currentTime;
 
-    // If the new time is significantly smaller than the old time (e.g. song looped)
-    if (value < oldValue && oldValue - value > 1000 && this.lyrics) {
+    const previousLine =
+      value < oldValue || this.rewindingLine
+        ? this.getLineIndexAtTime(oldValue)
+        : -1;
+    const sameLineRewind =
+      oldValue - value > 80 &&
+      previousLine >= 0 &&
+      previousLine === this.getLineIndexAtTime(value);
+    if (sameLineRewind) {
+      const line = this._getLineElement(previousLine);
+      if (line && !this.shouldReduceMotion) this.startLineRewind(line, value);
+    } else if (
+      this.rewindingLine &&
+      previousLine !== this.getLineIndexAtTime(value)
+    ) {
+      this.finishLineRewind();
+    }
+
+    // A same-line seek preserves the backing layout and reverses existing motion.
+    if (
+      !sameLineRewind &&
+      value < oldValue &&
+      oldValue - value > 1000 &&
+      this.lyrics
+    ) {
       this.activeLineIndices = [];
       this.preActiveLineElements = [];
       this.positionedLineElements = [];
@@ -2269,6 +2379,8 @@ export class AmLyrics extends LitElement {
   }
 
   disconnectedCallback() {
+    this.finishLineRewind();
+    this.pendingLayoutOffsets.clear();
     this.clearGapAnimations();
     super.disconnectedCallback();
     this.motionPreference?.removeEventListener(
@@ -2512,14 +2624,15 @@ export class AmLyrics extends LitElement {
       }, 100);
     }
 
-    await this.autoProcessLyrics();
+    if (!this.noAutoAlternates) await this.autoProcessLyrics();
   }
 
   private async autoProcessLyrics() {
+    if (this.noAutoAlternates) return;
     if (this.showRomanization) {
       await this.applyRomanization();
     }
-    if (this.showTranslation) {
+    if (this.showTranslation && !this.noAutoAlternates) {
       await this.applyTranslation();
     }
   }
@@ -3754,7 +3867,9 @@ export class AmLyrics extends LitElement {
 
       for (let i = 0; i < pNodes.length; i += 1) {
         const p = pNodes[i];
-        const key = p.getAttribute('itunes:key');
+        const key =
+          p.getAttributeNS('http://lrc.red/lyric-ttml-internal', 'key') ||
+          p.getAttribute('itunes:key');
         const beginMs = timeToMs(p.getAttribute('begin'));
         const endMs = timeToMs(p.getAttribute('end'), beginMs);
         const agentId = p.getAttribute('ttm:agent') || undefined;
@@ -3766,6 +3881,10 @@ export class AmLyrics extends LitElement {
         let songPart: string | undefined;
         if (p.parentNode && (p.parentNode as Element).tagName === 'div') {
           songPart =
+            (p.parentNode as Element).getAttributeNS(
+              'http://lrc.red/lyric-ttml-internal',
+              'songPart',
+            ) ||
             (p.parentNode as Element).getAttribute('itunes:songPart') ||
             undefined;
         }
@@ -4224,7 +4343,7 @@ export class AmLyrics extends LitElement {
         // Add 'active' to newly active lines. Background expansion is driven
         // separately by the current scroll target.
         for (const lineIndex of newActiveLines) {
-          if (!oldActiveLines.includes(lineIndex)) {
+          if (!oldActiveLines.includes(lineIndex) || isSeek) {
             const lineElement = this._getLineElement(lineIndex);
             if (lineElement) {
               lineElement.classList.add('active');
@@ -4271,8 +4390,9 @@ export class AmLyrics extends LitElement {
       // Update syllables in active lines using cached elements
       for (const lineIndex of this.activeLineIndices) {
         const lineElement = this._getLineElement(lineIndex);
-        if (lineElement) {
+        if (lineElement && lineElement !== this.rewindingLine) {
           AmLyrics.updateSyllablesForLine(lineElement, newTime);
+          if (isSeek) AmLyrics.seekLineWipes(lineElement, newTime);
         }
       }
 
@@ -4636,9 +4756,12 @@ export class AmLyrics extends LitElement {
       }
     }
 
-    this.focusLine(targetElement, forceScroll, scrollDuration);
-    // Start backing-vocal transitions in the same frame as line scrolling.
-    this.setBackgroundExpandedLine(targetElement);
+    // Commit backing spacing before measuring the destination. Its displacement
+    // and scrolling share the same spring rather than competing height tweens.
+    const layoutChanged = this.setBackgroundExpandedLine(targetElement, true);
+    this.focusLine(targetElement, forceScroll || layoutChanged, scrollDuration);
+    if (this.pendingLayoutOffsets.size)
+      this.finishLyricLayout(this.captureLyricLayout());
   }
 
   private _textWidthCanvas: HTMLCanvasElement | undefined;
@@ -4750,6 +4873,8 @@ export class AmLyrics extends LitElement {
   }
 
   private _invalidateCaches() {
+    this.finishLineRewind();
+    this.pendingLayoutOffsets.clear();
     this.clearGapAnimations();
     this.cancelLineScrollAnimation();
     this.lyricsContainer
@@ -5083,6 +5208,9 @@ export class AmLyrics extends LitElement {
     const duration = Math.max(1, gapEndTime - gapStartTime);
     const elapsed = timeMs - gapStartTime;
     if (elapsed < 0 || elapsed >= duration + GAP_EXIT_TRAIL_MS) {
+      const before = gap.classList.contains('active')
+        ? this.captureLyricLayout()
+        : null;
       this.gapAnimations
         .get(gap)
         ?.animations.forEach(animation => animation.cancel());
@@ -5090,9 +5218,14 @@ export class AmLyrics extends LitElement {
       gap.classList.remove('active', 'gap-collapsing', 'gap-exiting');
       const index = this.activeGapLineElements.indexOf(gap);
       if (index !== -1) this.activeGapLineElements.splice(index, 1);
+      if (before) this.finishLyricLayout(before);
       return;
     }
     const remaining = duration - elapsed;
+    const layoutBefore =
+      gap.classList.contains('active') !== remaining > collapseLeadMs
+        ? this.captureLyricLayout()
+        : null;
     gap.classList.toggle('active', remaining > collapseLeadMs);
     gap.classList.toggle('gap-collapsing', remaining <= collapseLeadMs);
     gap.classList.toggle(
@@ -5101,6 +5234,7 @@ export class AmLyrics extends LitElement {
     );
     if (!this.activeGapLineElements.includes(gap))
       this.activeGapLineElements.push(gap);
+    if (layoutBefore) this.finishLyricLayout(layoutBefore);
 
     let motion = this.gapAnimations.get(gap);
     if (!motion) {
@@ -5111,17 +5245,32 @@ export class AmLyrics extends LitElement {
         duration - collapseLeadMs - exitLeadMs,
       );
       const end = Math.min(duration, exitStart + exitLeadMs);
+      const entryStart = Math.max(
+        0,
+        Math.min(elapsed, exitStart - GAP_ENTRY_SCALE_MS),
+      );
       // Dense samples only around the entrance and exit; the slow breath needs
       // far fewer. The browser interpolates all frames without playback ticks.
       const times = new Set([
         0,
-        GAP_ENTRY_FADE_MS,
-        GAP_ENTRY_SCALE_MS,
+        entryStart,
+        entryStart + GAP_ENTRY_FADE_MS,
+        entryStart + GAP_ENTRY_SCALE_MS,
         exitStart,
         end,
       ]);
-      for (let t = 25; t < GAP_ENTRY_SCALE_MS; t += 25) times.add(t);
-      for (let t = GAP_ENTRY_SCALE_MS; t < exitStart; t += 200) times.add(t);
+      for (
+        let t = entryStart + 25;
+        t < entryStart + GAP_ENTRY_SCALE_MS;
+        t += 25
+      )
+        times.add(t);
+      for (
+        let t = entryStart + GAP_ENTRY_SCALE_MS;
+        t < exitStart;
+        t += Math.max(200, exitStart / 1000)
+      )
+        times.add(t);
       for (let t = exitStart; t < end; t += 20) times.add(t);
       const frames = [...times]
         .filter(t => t <= end)
@@ -5136,8 +5285,14 @@ export class AmLyrics extends LitElement {
           let scale =
             (GAP_BREATH_MAX_SCALE +
               (GAP_BREATH_MIN_SCALE - GAP_BREATH_MAX_SCALE) * mix) *
-            AmLyrics.easeOutExpo(Math.min(1, time / GAP_ENTRY_SCALE_MS));
-          let opacity = Math.min(1, time / GAP_ENTRY_FADE_MS);
+            AmLyrics.easeOutExpo(
+              AmLyrics.clamp((time - entryStart) / GAP_ENTRY_SCALE_MS, 0, 1),
+            );
+          let opacity = AmLyrics.clamp(
+            (time - entryStart) / GAP_ENTRY_FADE_MS,
+            0,
+            1,
+          );
           if (time >= exitStart) {
             const progress = (time - exitStart) / Math.max(1, end - exitStart);
             const popping = progress <= GAP_EXIT_POP_PROGRESS;
@@ -5181,7 +5336,10 @@ export class AmLyrics extends LitElement {
       motion.animations.forEach(animation => {
         const timeline = animation;
         timeline.currentTime = elapsed;
-        if (animation.playState === 'finished' && elapsed < motion!.end)
+        if (
+          animation.playState === 'finished' &&
+          elapsed < Number(animation.effect?.getComputedTiming().endTime)
+        )
           animation.play();
       });
     }
@@ -5211,13 +5369,75 @@ export class AmLyrics extends LitElement {
     this.progressiveBlurLine = null;
   }
 
-  private setBackgroundExpandedLine(lineElement: HTMLElement | null): void {
+  private pendingLayoutOffsets = new Map<HTMLElement, number>();
+
+  private captureLyricLayout(): {
+    tops: Map<HTMLElement, number>;
+    scrollTop: number;
+  } {
+    const lines = this.cachedLineArray.length
+      ? this.cachedLineArray
+      : Array.from(
+          this.lyricsContainer?.querySelectorAll<HTMLElement>('.lyrics-line') ||
+            [],
+        );
+    const reference = Math.max(
+      0,
+      lines.indexOf(this.currentPrimaryActiveLine!),
+    );
+    return {
+      tops: new Map(
+        lines
+          .slice(Math.max(0, reference - 20), reference + 21)
+          .map(line => [line, line.offsetTop]),
+      ),
+      scrollTop: this.lyricsContainer?.scrollTop || 0,
+    };
+  }
+
+  private finishLyricLayout(
+    before: { tops: Map<HTMLElement, number>; scrollTop: number },
+    deferScroll = false,
+  ): void {
+    if (!this.lyricsContainer) return;
+    const scrollCorrection = this.lyricsContainer.scrollTop - before.scrollTop;
+    before.tops.forEach((top, line) => {
+      const delta = top - line.offsetTop + scrollCorrection;
+      if (Math.abs(delta) > 0.1)
+        this.pendingLayoutOffsets.set(
+          line,
+          (this.pendingLayoutOffsets.get(line) || 0) + delta,
+        );
+    });
+    if (deferScroll || !this.pendingLayoutOffsets.size) return;
+    const target = this.currentPrimaryActiveLine;
+    const top =
+      target && this.autoScroll && !this.isUserScrolling
+        ? Math.max(0, target.offsetTop - this.getScrollPaddingTop())
+        : this.lyricsContainer.scrollTop;
+    this.animateScrollYouLy(-top, false, undefined, target);
+  }
+
+  private setBackgroundExpandedLine(
+    lineElement: HTMLElement | null,
+    deferScroll = false,
+  ): boolean {
     const target =
       lineElement &&
       !lineElement.classList.contains('lyrics-gap') &&
       lineElement.querySelector('.background-vocal-container')
         ? lineElement
         : null;
+
+    const changing =
+      (target && !this.backgroundExpandedLines.has(target)) ||
+      [...this.backgroundExpandedLines].some(
+        ([line, timing]) =>
+          line !== target &&
+          !(this.currentTime >= timing.start && this.currentTime < timing.end),
+      );
+    if (!changing) return false;
+    const before = this.captureLyricLayout();
 
     this.backgroundExpandedLines.forEach((timing, line) => {
       // Keep the entire backing phrase through brief gaps and overlapping leads.
@@ -5249,7 +5469,10 @@ export class AmLyrics extends LitElement {
       this.backgroundCollapseTimeouts.set(line, timeoutId);
     });
 
-    if (!target || this.backgroundExpandedLines.has(target)) return;
+    if (!target || this.backgroundExpandedLines.has(target)) {
+      this.finishLyricLayout(before, deferScroll);
+      return true;
+    }
     const timeoutId = this.backgroundCollapseTimeouts.get(target);
     if (timeoutId !== undefined) clearTimeout(timeoutId);
     this.backgroundCollapseTimeouts.delete(target);
@@ -5265,6 +5488,8 @@ export class AmLyrics extends LitElement {
     target.classList.remove('bg-collapsing');
     target.style.removeProperty('--background-vocal-exit-duration');
     AmLyrics.scheduleBackgroundExpansion(target);
+    this.finishLyricLayout(before, deferScroll);
+    return true;
   }
 
   private static scheduleBackgroundExpansion(target: HTMLElement): void {
@@ -5412,6 +5637,17 @@ export class AmLyrics extends LitElement {
           `${scrollDuration ?? SCROLL_ANIMATION_DURATION_MS}ms`,
         );
         this.lastPrimaryActiveLine.classList.add('scroll-exiting');
+        const previousIndex = AmLyrics.getLineIndexFromElement(
+          this.lastPrimaryActiveLine,
+        );
+        if (
+          previousIndex !== null &&
+          AmLyrics.isLineSyncedLine(this.lyrics?.[previousIndex])
+        ) {
+          this.lastPrimaryActiveLine.classList.remove('active', 'pre-active');
+          this.lastPrimaryActiveLine.removeAttribute('aria-current');
+          AmLyrics.unfinishSyllables(this.lastPrimaryActiveLine);
+        }
       }
       this.currentPrimaryActiveLine = lineElement;
       this.currentPrimaryActiveLine.classList.remove('scroll-exiting');
@@ -5850,7 +6086,7 @@ export class AmLyrics extends LitElement {
 
   private animateScrollYouLy(
     newTranslateY: number,
-    forceScroll?: boolean,
+    _forceScroll?: boolean,
     _scrollDuration?: number,
     referenceElement: HTMLElement | null = null,
   ): void {
@@ -5862,9 +6098,11 @@ export class AmLyrics extends LitElement {
       this.cancelLineScrollAnimation();
       parent.scrollTop = Math.max(0, -newTranslateY);
       this.currentScrollOffset = -parent.scrollTop;
+      this.pendingLayoutOffsets.clear();
       return;
     }
-    if (Math.abs(requestedDelta) < 0.5) return;
+    if (Math.abs(requestedDelta) < 0.5 && !this.pendingLayoutOffsets.size)
+      return;
     const lines = Array.from(
       parent.querySelectorAll<HTMLElement>('.lyrics-line'),
     );
@@ -5893,18 +6131,28 @@ export class AmLyrics extends LitElement {
             previous.frequency,
           )
         : { position: 0, velocity: 0 };
-      const steps = requestedDelta > 0 ? index - reference : reference - index;
+      const steps = requestedDelta >= 0 ? index - reference : reference - index;
+      // Restore the row cascade without restarting delays when backing layout
+      // retargets a spring already in flight. Layout offsets still preserve pose.
+      let delay = 0;
+      if (this.lineMotion !== 'uniform') {
+        delay = previous
+          ? Math.max(
+              0,
+              previous.delay -
+                Number(previous.animation.currentTime || 0) / 1000,
+            )
+          : Math.max(0, Math.min(4, steps)) * 0.05;
+      }
       return {
         line,
         index,
-        position: pose.position,
+        position: pose.position + (this.pendingLayoutOffsets.get(line) || 0),
         velocity: pose.velocity,
-        delay:
-          previous || forceScroll || this.lineMotion === 'uniform'
-            ? 0
-            : Math.max(0, Math.min(4, steps)) * 0.05,
+        delay,
       };
     });
+    this.pendingLayoutOffsets.clear();
     this.cancelLineScrollAnimation();
     // Animated translation contributes to scrollHeight. Measure the real
     // range only after removing it, or retargeting near the bottom jumps.
@@ -5919,7 +6167,16 @@ export class AmLyrics extends LitElement {
     poses.forEach(
       ({ line, index, position: previousPosition, velocity, delay }) => {
         const position = previousPosition + delta;
-        if (Math.abs(index - reference) > 20) return;
+        const settlingVelocity =
+          position * velocity > 0
+            ? 0
+            : Math.sign(velocity) *
+              Math.min(Math.abs(velocity), Math.abs(position) * 10);
+        if (
+          Math.abs(index - reference) > 20 ||
+          (Math.abs(position) < 0.1 && Math.abs(settlingVelocity) < 0.1)
+        )
+          return;
         const duration = 1.2;
         const frames = Array.from({ length: 97 }, (_, frame) => {
           const offset = frame / 96;
@@ -5928,7 +6185,7 @@ export class AmLyrics extends LitElement {
               ? 0
               : AmLyrics.sampleSpring(
                   position,
-                  velocity,
+                  settlingVelocity,
                   duration * offset,
                   frequency,
                 ).position;
@@ -5944,7 +6201,7 @@ export class AmLyrics extends LitElement {
         this.lineSprings.set(line, {
           animation,
           position,
-          velocity,
+          velocity: settlingVelocity,
           delay,
           frequency,
         });
@@ -6026,33 +6283,24 @@ export class AmLyrics extends LitElement {
     if (!activeLine || !this.lyricsContainer) return;
 
     const paddingTop = this.getScrollPaddingTop();
-    const previousSibling = activeLine.previousElementSibling;
-    const precedingGap =
-      previousSibling instanceof HTMLElement &&
-      previousSibling.classList.contains('lyrics-gap') &&
-      (previousSibling.classList.contains('active') ||
-        previousSibling.classList.contains('gap-collapsing') ||
-        previousSibling.classList.contains('gap-exiting'))
-        ? previousSibling
-        : null;
-    /* The gap starts collapsing during this predictive scroll. Aim at the
-       lyric's post-collapse offset so the scroll transform and layout reflow
-       do not both apply the same vertical distance. */
-    const targetOffsetTop =
-      activeLine.offsetTop - (precedingGap?.offsetHeight ?? 0);
-    const targetTop = Math.max(0, targetOffsetTop - paddingTop);
+    const targetTop = Math.max(0, activeLine.offsetTop - paddingTop);
     const targetTranslateY = -targetTop;
 
     // Skip if already at target position
     if (
       !forceScroll &&
+      !this.pendingLayoutOffsets.size &&
       Math.abs(this.lyricsContainer.scrollTop - targetTop) < 1
     ) {
       return;
     }
 
     // Skip scroll if near the bottom of content and we aren't trying to scroll back up
-    if (!forceScroll && !activeLine.classList.contains('lyrics-footer')) {
+    if (
+      !forceScroll &&
+      !this.pendingLayoutOffsets.size &&
+      !activeLine.classList.contains('lyrics-footer')
+    ) {
       const parent = this.lyricsContainer;
       const atBottom =
         parent.scrollTop + parent.clientHeight >= parent.scrollHeight - 50;
@@ -6548,7 +6796,10 @@ export class AmLyrics extends LitElement {
       const wipeCharCount = AmLyrics.getVisibleCharacterCount(syllable);
       const wipeScale = AmLyrics.getLongWordWipeScale(wipeCharCount);
       const nominalVisualDuration = syllableDurationMs * wipeRatio * wipeScale;
-      const visualDuration = nominalVisualDuration;
+      const visualDuration = Math.min(
+        syllableDurationMs,
+        nominalVisualDuration,
+      );
       AmLyrics.applyWipeShape(syllable, wipeCharCount);
 
       let wipeAnimation = 'wipe';
@@ -6790,7 +7041,13 @@ export class AmLyrics extends LitElement {
 
   private static characterAnimations = new WeakMap<
     HTMLElement,
-    { animation: Animation; end: number; key: object; glowEpoch: number }
+    {
+      animation: Animation;
+      start: number;
+      end: number;
+      key: object;
+      glowEpoch: number;
+    }
   >();
 
   private static clearCharacterMotion(char: HTMLElement): void {
@@ -6815,7 +7072,11 @@ export class AmLyrics extends LitElement {
         line.querySelectorAll<HTMLElement>('.lyrics-syllable.has-chars'),
       ).filter(syllable => {
         const word = AmLyrics.getWordElementForSyllable(syllable);
-        const key = AmLyrics.getCachedVirtualWordElements(word)[0] || syllable;
+        // CJK has no reliable whitespace word boundaries. Keep each timed
+        // segment's clock; only non-CJK split words share a motion clock.
+        const key = word?.classList.contains('char-rise')
+          ? syllable
+          : AmLyrics.getCachedVirtualWordElements(word)[0] || syllable;
         if (seen.has(key)) return false;
         seen.add(key);
         return true;
@@ -6826,23 +7087,26 @@ export class AmLyrics extends LitElement {
       let parameters = AmLyrics.motionParameters.get(syllable);
       if (!parameters) {
         const word = AmLyrics.getWordElementForSyllable(syllable);
-        const chars = AmLyrics.getCachedVirtualWordCharSpans(
-          word,
-          AmLyrics.getCachedCharSpans(syllable),
-        );
+        const cjk = word?.classList.contains('char-rise') ?? false;
+        const localChars = AmLyrics.getCachedCharSpans(syllable);
+        const chars = cjk
+          ? localChars
+          : AmLyrics.getCachedVirtualWordCharSpans(word, localChars);
         const start = Number(
-          word?.dataset.virtualWordStart ?? syllable.dataset.startTime,
+          cjk
+            ? syllable.dataset.startTime
+            : (word?.dataset.virtualWordStart ?? syllable.dataset.startTime),
         );
         const end = Number(
-          word?.dataset.virtualWordEnd ?? syllable.dataset.endTime,
+          cjk
+            ? syllable.dataset.endTime
+            : (word?.dataset.virtualWordEnd ?? syllable.dataset.endTime),
         );
         parameters = {
           chars,
           duration: Math.max(0.001, (end - start) / 1000),
           start,
-          cjk: /[\u3400-\u4dbf\u4e00-\u9fff\u3040-\u30ff]/.test(
-            chars.map(char => char.textContent).join(''),
-          ),
+          cjk,
         };
         AmLyrics.motionParameters.set(syllable, parameters);
       }
@@ -6862,7 +7126,14 @@ export class AmLyrics extends LitElement {
           AmLyrics.clearCharacterMotion(char);
           return;
         }
-        const startDelay = (index + 1) * delay * 1000;
+        const startDelay = cjk
+          ? index *
+            Math.min(
+              40,
+              160 / Math.max(1, count - 1),
+              (duration * 1000) / (count * 8),
+            )
+          : (index + 1) * delay * 1000;
         const end = spanDuration * 1000 + startDelay;
         const key = parameters;
         let entry = AmLyrics.characterAnimations.get(char);
@@ -6912,14 +7183,21 @@ export class AmLyrics extends LitElement {
             );
           }
           char.classList.add('native-motion');
-          const animation = char.animate(frames, {
+          // Transform a separate wrapper. WebKit can expose rectangular clip
+          // edges when the gradient-clipped glyph itself is transformed.
+          const motionTarget = char.parentElement?.classList.contains(
+            'char-motion',
+          )
+            ? char.parentElement
+            : char;
+          const animation = motionTarget.animate(frames, {
             duration: spanDuration * 1000,
             delay: startDelay,
             fill: 'both',
             easing: 'linear',
           });
           animation.currentTime = Math.min(elapsed, end);
-          entry = { animation, end, key, glowEpoch: elapsed };
+          entry = { animation, start, end, key, glowEpoch: elapsed };
           AmLyrics.characterAnimations.set(char, entry);
         } else if (
           Math.abs(
@@ -6953,6 +7231,32 @@ export class AmLyrics extends LitElement {
     // Native constructor: RVA 0x1559b0. Exact step response, no frame integration.
     const phase = (2 * Math.PI * time) / Math.max(0.001, response);
     return 1 - (1 + phase) * Math.exp(-phase);
+  }
+
+  private static seekLineWipes(line: HTMLElement, time: number): void {
+    line.getAnimations({ subtree: true }).forEach(animation => {
+      if (
+        !('animationName' in animation) ||
+        !String(animation.animationName).includes('wipe')
+      )
+        return;
+      const effect = animation.effect as KeyframeEffect;
+      const syllable = (effect.target as HTMLElement)?.closest<HTMLElement>(
+        '.lyrics-syllable',
+      );
+      if (!syllable) return;
+      const elapsed =
+        time -
+        Number(syllable.dataset.startTime) +
+        Number(effect.getTiming().delay);
+      const end = Number(effect.getComputedTiming().endTime);
+      const timeline = animation;
+      timeline.currentTime = Math.min(elapsed, end);
+      if (elapsed < end && animation.playState !== 'running') {
+        animation.play();
+        timeline.currentTime = elapsed;
+      }
+    });
   }
 
   private static updateSyllablesForLine(
@@ -7400,12 +7704,14 @@ export class AmLyrics extends LitElement {
                               if (/\s/.test(char)) return char;
                               const index = bgCharIndex;
                               bgCharIndex += 1;
-                              return html`<span
-                                class="char"
-                                data-syllable-char-index="${index}"
-                                data-wipe-start="${index / bgChars.length}"
-                                data-wipe-duration="${1 / bgChars.length}"
-                                >${char}</span
+                              return html`<span class="char-motion"
+                                ><span
+                                  class="char"
+                                  data-syllable-char-index="${index}"
+                                  data-wipe-start="${index / bgChars.length}"
+                                  data-wipe-duration="${1 / bgChars.length}"
+                                  >${char}</span
+                                ></span
                               >`;
                             })
                           : syllable.text}</span
@@ -7526,12 +7832,14 @@ export class AmLyrics extends LitElement {
                     sylCharAccumulator += 1;
                     charIndexInsideSyllable += 1;
 
-                    return html`<span
-                      class="char"
-                      data-char-index="${charIndexInsideWord}"
-                      data-syllable-char-index="${charIndexInsideWord}"
-                      style="--word-wipe-width: ${numCharsInSyllable}ch; --char-wipe-position: -${localCharIndex}ch"
-                      >${char}</span
+                    return html`<span class="char-motion"
+                      ><span
+                        class="char"
+                        data-char-index="${charIndexInsideWord}"
+                        data-syllable-char-index="${charIndexInsideWord}"
+                        style="--word-wipe-width: ${numCharsInSyllable}ch; --char-wipe-position: -${localCharIndex}ch"
+                        >${char}</span
+                      ></span
                     >`;
                   })}`;
                 }
