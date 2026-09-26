@@ -2,7 +2,7 @@ import { css, html, LitElement, svg } from 'lit';
 import { property, query, state } from 'lit/decorators.js';
 import { GoogleService } from './GoogleService.js';
 
-const VERSION = '1.7.3';
+const VERSION = '1.7.4';
 const INSTRUMENTAL_THRESHOLD_MS = 7000; // Show dots for gaps >= 7s
 const FETCH_TIMEOUT_MS = 8000; // Timeout for all lyrics fetch requests
 const SEEK_THRESHOLD_MS = 500;
@@ -1946,7 +1946,7 @@ export class AmLyrics extends LitElement {
   @property({ type: Boolean })
   interpolate = true;
 
-  /** Keep provider-supplied alternates without requesting automatic Google fills. */
+  /** Use supplied alternates only; disable Google generation, including button actions. */
   @property({ type: Boolean, attribute: 'no-auto-alternates' })
   noAutoAlternates = false;
 
@@ -1990,6 +1990,7 @@ export class AmLyrics extends LitElement {
   }
 
   private async applyRomanization() {
+    if (this.noAutoAlternates) return;
     if (this.showRomanization && this.lyrics) {
       const needsRomanization = this.lyrics.some(
         l =>
@@ -2017,6 +2018,7 @@ export class AmLyrics extends LitElement {
   }
 
   private async applyTranslation() {
+    if (this.noAutoAlternates) return;
     if (this.showTranslation && this.lyrics) {
       const needsTranslation = this.lyrics.some(l => !l.translation);
       if (needsTranslation) {
