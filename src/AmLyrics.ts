@@ -2,7 +2,7 @@ import { css, html, LitElement, svg } from 'lit';
 import { property, query, state } from 'lit/decorators.js';
 import { GoogleService } from './GoogleService.js';
 
-const VERSION = '1.8.0';
+const VERSION = '1.8.1';
 const INSTRUMENTAL_THRESHOLD_MS = 7000; // Show dots for gaps >= 7s
 const FETCH_TIMEOUT_MS = 8000; // Default timeout for lyrics fetch requests
 const LRC_RED_TIMEOUT_MS = 3000;
@@ -71,7 +71,13 @@ interface Syllable {
 
 interface WordWipe {
   syllables: HTMLElement[];
-  fragments: Array<{ element: HTMLElement; width: number; offset: number }>;
+  fragments: Array<{
+    element: HTMLElement;
+    width: number;
+    offset: number;
+    fontSize: number;
+    padding: number;
+  }>;
   segments: Array<{ start: number; end: number; width: number }>;
   width: number;
   count: number;
@@ -81,6 +87,8 @@ interface WordWipe {
   rtl: boolean;
   animations: Animation[];
   epoch: number;
+  prepared: boolean;
+  settled: boolean;
 }
 
 interface NormalWordMotion {
@@ -626,7 +634,8 @@ export class AmLyrics extends LitElement {
     }
 
     /* Keep the same playback-driven blur as the upcoming line enters focus. */
-    .lyrics-container.blur-inactive-enabled .lyrics-line.pre-active {
+    .lyrics-container.blur-inactive-enabled
+      .lyrics-line.pre-active:not(.progressive-unblur) {
       filter: none !important;
       opacity: 1;
     }
@@ -2237,6 +2246,20 @@ export class AmLyrics extends LitElement {
     this.rewindingLines = new Set(lines);
     for (const line of lines) {
       for (const word of AmLyrics.motionWords.get(line) || []) {
+        if (
+          word.wipe &&
+          targetTime < word.wipe.end &&
+          (word.wipe.settled ||
+            word.wipe.animations.some(
+              animation => animation.playState === 'idle',
+            ))
+        )
+          AmLyrics.startWordWipe(
+            word.wipe,
+            word.wipe.end,
+            word.wipe.epoch,
+            true,
+          );
         const motion = AmLyrics.normalWordMotions.get(word.element);
         if (
           motion?.settled &&
@@ -2246,6 +2269,14 @@ export class AmLyrics extends LitElement {
             motion,
             NORMAL_WORD_SPRING_DURATION_MS,
           );
+      }
+      for (const syllable of AmLyrics.motionSyllables.get(line) || []) {
+        const parameters = AmLyrics.motionParameters.get(syllable);
+        for (const char of parameters?.chars || []) {
+          const entry = AmLyrics.characterAnimations.get(char);
+          if (entry?.settled && targetTime < entry.start + entry.end)
+            AmLyrics.resumeCharacterMotion(char, entry.end);
+        }
       }
     }
     // Use the existing painted pose, even when another rewind is interrupted.
@@ -2371,6 +2402,34 @@ export class AmLyrics extends LitElement {
   private lyrics?: LyricsLine[];
 
   private activeLineIndices: number[] = [];
+
+  private timingLyrics?: LyricsLine[];
+
+  private lineHighlightEnds: number[] = [];
+
+  private activeTimelineInterval?: {
+    start: number;
+    end: number;
+    indices: number[];
+  };
+
+  private backgroundWraps = new WeakMap<HTMLElement, HTMLElement | null>();
+
+  private ensureTimingCache(): void {
+    if (this.timingLyrics === this.lyrics) return;
+    this.timingLyrics = this.lyrics;
+    this.lineHighlightEnds = [];
+    this.activeTimelineInterval = undefined;
+  }
+
+  private getBackgroundWrap(line: HTMLElement): HTMLElement | null {
+    let wrap = this.backgroundWraps.get(line);
+    if (wrap === undefined) {
+      wrap = line.querySelector<HTMLElement>('.background-vocal-wrap');
+      this.backgroundWraps.set(line, wrap);
+    }
+    return wrap;
+  }
 
   @state()
   private lyricsSource: string | null = null;
@@ -2503,6 +2562,8 @@ export class AmLyrics extends LitElement {
 
   private progressiveBlurLine: HTMLElement | null = null;
 
+  private progressiveBlurAnimation?: Animation;
+
   private positionedLineElements: HTMLElement[] = [];
 
   private activeGapLineElements: HTMLElement[] = [];
@@ -2552,6 +2613,7 @@ export class AmLyrics extends LitElement {
       this.clickSeekTimeout = undefined;
     }
     this.clearBackgroundExpandedLine();
+    this.clearProgressiveBlurLine();
     // Cancel any in-flight fetch requests
     this.fetchAbortController?.abort();
     this.fetchAbortController = undefined;
@@ -4881,18 +4943,14 @@ export class AmLyrics extends LitElement {
 
     // 1. Compute scroll lookahead based on gap to next line (YouLyPlus style)
     let scrollLookAheadMs = 350;
-    let currentAudioIndex = -1;
-    for (let i = 0; i < this.lyrics.length; i += 1) {
-      if (this.lyrics[i].timestamp > this.currentTime) {
-        currentAudioIndex = i - 1;
-        break;
-      }
+    let low = 0;
+    let high = this.lyrics.length;
+    while (low < high) {
+      const middle = Math.floor((low + high) / 2);
+      if (this.lyrics[middle].timestamp <= this.currentTime) low = middle + 1;
+      else high = middle;
     }
-    if (currentAudioIndex === -1 && this.lyrics.length > 0) {
-      if (this.currentTime >= this.lyrics[this.lyrics.length - 1].timestamp) {
-        currentAudioIndex = this.lyrics.length - 1;
-      }
-    }
+    const currentAudioIndex = low - 1;
 
     if (
       currentAudioIndex !== -1 &&
@@ -4924,17 +4982,38 @@ export class AmLyrics extends LitElement {
         this.clearProgressiveBlurLine();
         this.progressiveBlurLine = nextLineElement;
         nextLineElement.classList.add('progressive-unblur');
+        // Animate the filter in the browser instead of invalidating the next
+        // line's styles on every playback tick. The underlying style holds zero.
+        nextLineElement.style.filter = 'blur(0em)';
+        const animation = nextLineElement.animate(
+          [
+            { filter: `blur(${NEXT_LINE_BASE_BLUR_EM}em)` },
+            { filter: 'blur(0em)' },
+          ],
+          {
+            duration: NEXT_LINE_UNBLUR_DURATION_MS,
+            easing: 'linear',
+            fill: 'both',
+          },
+        );
+        this.progressiveBlurAnimation = animation;
+        animation.onfinish = () => {
+          if (this.progressiveBlurAnimation === animation) animation.cancel();
+        };
       }
-      const remainingTime = Math.max(
-        0,
-        this.lyrics[nextLineIndex].timestamp - this.currentTime,
-      );
-      const blurEm =
-        NEXT_LINE_BASE_BLUR_EM *
-        AmLyrics.clamp(remainingTime / NEXT_LINE_UNBLUR_DURATION_MS, 0, 1);
-      const blurValue = `blur(${blurEm.toFixed(4)}em)`;
-      if (nextLineElement.style.filter !== blurValue) {
-        nextLineElement.style.setProperty('filter', blurValue, 'important');
+      const elapsed =
+        this.currentTime -
+        this.lyrics[nextLineIndex].timestamp +
+        NEXT_LINE_UNBLUR_DURATION_MS;
+      const animation = this.progressiveBlurAnimation!;
+      if (elapsed < NEXT_LINE_UNBLUR_DURATION_MS) {
+        if (animation.playState === 'idle') animation.play();
+        if (
+          forceScroll ||
+          animation.currentTime === null ||
+          Math.abs(Number(animation.currentTime) - elapsed) > 200
+        )
+          animation.currentTime = elapsed;
       }
     } else {
       this.clearProgressiveBlurLine();
@@ -5000,6 +5079,7 @@ export class AmLyrics extends LitElement {
   }
 
   private _rebuildDomCache() {
+    this.backgroundWraps = new WeakMap();
     if (!this.lyricsContainer) return;
 
     this.lineElementCache.clear();
@@ -5099,6 +5179,9 @@ export class AmLyrics extends LitElement {
   }
 
   private _invalidateCaches() {
+    this.timingLyrics = undefined;
+    this.lineHighlightEnds = [];
+    this.activeTimelineInterval = undefined;
     this.finishLineRewind();
     for (const line of this.cachedLineArray) {
       for (const word of AmLyrics.motionWords.get(line) || [])
@@ -5241,6 +5324,15 @@ export class AmLyrics extends LitElement {
   }
 
   private getLineHighlightEndTime(index: number): number {
+    this.ensureTimingCache();
+    if (this.lineHighlightEnds[index] !== undefined)
+      return this.lineHighlightEnds[index];
+    const end = this.computeLineHighlightEndTime(index);
+    this.lineHighlightEnds[index] = end;
+    return end;
+  }
+
+  private computeLineHighlightEndTime(index: number): number {
     if (!this.lyrics) return 0;
     const line = this.lyrics[index];
     if (!line) return 0;
@@ -5472,6 +5564,8 @@ export class AmLyrics extends LitElement {
   }
 
   private clearProgressiveBlurLine(): void {
+    this.progressiveBlurAnimation?.cancel();
+    this.progressiveBlurAnimation = undefined;
     if (!this.progressiveBlurLine) return;
     this.progressiveBlurLine.classList.remove('progressive-unblur');
     this.progressiveBlurLine.style.removeProperty('filter');
@@ -5568,14 +5662,15 @@ export class AmLyrics extends LitElement {
     for (const index of visibleIndices) {
       const line = this._getLineElement(index);
       if (
-        line?.querySelector('.background-vocal-wrap') &&
+        line &&
+        this.getBackgroundWrap(line) &&
         this.lyrics?.[index].backgroundText.some(
           note => note.endtime > visibilityTime,
         )
       )
         desired.add(line);
     }
-    if (lineElement?.querySelector('.background-vocal-wrap'))
+    if (lineElement && this.getBackgroundWrap(lineElement))
       desired.add(lineElement);
     const entering = [...desired].filter(
       line => !this.backgroundExpandedLines.has(line),
@@ -5588,7 +5683,7 @@ export class AmLyrics extends LitElement {
     const before = this.captureLyricLayout();
     // Capture every pose before committing any height, including interrupted fades.
     const changes = [...leaving, ...entering].map(line => {
-      const wrap = line.querySelector<HTMLElement>('.background-vocal-wrap')!;
+      const wrap = this.getBackgroundWrap(line)!;
       const style = getComputedStyle(wrap);
       const pose = { opacity: style.opacity, transform: style.transform };
       const expanded = desired.has(line);
@@ -5898,17 +5993,31 @@ export class AmLyrics extends LitElement {
 
   private findActiveLineIndices(time: number): number[] {
     if (!this.lyrics || this.lyrics.length === 0) return [];
+    this.ensureTimingCache();
+    const interval = this.activeTimelineInterval;
+    if (interval && time >= interval.start && time < interval.end)
+      return interval.indices;
     const activeLines: number[] = [];
+    let start = -Infinity;
+    let end = Infinity;
 
     for (let i = 0; i < this.lyrics.length; i += 1) {
       const line = this.lyrics[i];
       const highlightEndTime = this.getLineHighlightEndTime(i);
 
-      if (line.timestamp > time) break;
+      if (line.timestamp > time) {
+        end = Math.min(end, line.timestamp);
+        break;
+      }
+      start = Math.max(start, line.timestamp);
       if (time >= line.timestamp && time < highlightEndTime) {
         activeLines.push(i);
+        end = Math.min(end, highlightEndTime);
+      } else {
+        start = Math.max(start, highlightEndTime);
       }
     }
+    this.activeTimelineInterval = { start, end, indices: activeLines };
     return activeLines;
   }
 
@@ -6209,16 +6318,37 @@ export class AmLyrics extends LitElement {
     velocity: number,
     frequency = 10,
   ): Array<{ offset: number; translate: string }> {
-    return Array.from({ length: 97 }, (_, frame) => {
-      const offset = frame / 96;
-      const y =
-        frame === 96
-          ? 0
-          : AmLyrics.sampleSpring(position, velocity, 1.2 * offset, frequency)
-              .position;
+    let samples = AmLyrics.lineSpringSamples.get(frequency);
+    if (!samples) {
+      samples = Array.from({ length: 97 }, (_, frame) => {
+        const offset = frame / 96;
+        const time = 1.2 * offset;
+        return {
+          offset,
+          fromPosition:
+            frame === 96
+              ? 0
+              : AmLyrics.sampleSpring(1, 0, time, frequency).position,
+          fromVelocity:
+            frame === 96
+              ? 0
+              : AmLyrics.sampleSpring(0, 1, time, frequency).position,
+        };
+      });
+      AmLyrics.lineSpringSamples.set(frequency, samples);
+    }
+    // A spring is linear in its starting position and velocity. Reuse the
+    // two unit curves instead of repeating trigonometry for every moving row.
+    return samples.map(({ offset, fromPosition, fromVelocity }) => {
+      const y = position * fromPosition + velocity * fromVelocity;
       return { offset, translate: `0 ${y}px` };
     });
   }
+
+  private static lineSpringSamples = new Map<
+    number,
+    Array<{ offset: number; fromPosition: number; fromVelocity: number }>
+  >();
 
   private getLayoutScrollHeight(): number {
     const parent = this.lyricsContainer;
@@ -6254,9 +6384,9 @@ export class AmLyrics extends LitElement {
     }
     if (Math.abs(requestedDelta) < 0.5 && !this.pendingLayoutOffsets.size)
       return;
-    const lines = Array.from(
-      parent.querySelectorAll<HTMLElement>('.lyrics-line'),
-    );
+    const lines = this.cachedLineArray.length
+      ? this.cachedLineArray
+      : Array.from(parent.querySelectorAll<HTMLElement>('.lyrics-line'));
     const reference = lines.indexOf(
       referenceElement || this.currentPrimaryActiveLine || lines[0],
     );
@@ -6300,6 +6430,9 @@ export class AmLyrics extends LitElement {
       return {
         line,
         index,
+        top: line.offsetTop,
+        height: line.offsetHeight,
+        moving: Boolean(previous),
         position: pose.position + (this.pendingLayoutOffsets.get(line) || 0),
         velocity: pose.velocity,
         delay,
@@ -6315,13 +6448,27 @@ export class AmLyrics extends LitElement {
       Math.max(0, this.getLayoutScrollHeight() - parent.clientHeight),
     );
     const delta = target - currentTop;
+    // Cover the entire swept viewport, not just its destination. Retargeted
+    // rows retain their motion; distant rows need no sampled spring or layer.
+    const visibleStart = Math.min(currentTop, target) - 200;
+    const visibleEnd = Math.max(currentTop, target) + parent.clientHeight + 200;
     parent.scrollTop = target;
     this.currentScrollOffset = -target;
     poses.forEach(
-      ({ line, index, position: previousPosition, velocity, delay }) => {
+      ({
+        line,
+        index,
+        top,
+        height,
+        moving,
+        position: previousPosition,
+        velocity,
+        delay,
+      }) => {
         const position = previousPosition + delta;
         if (
           Math.abs(index - reference) > 20 ||
+          (!moving && (top + height < visibleStart || top > visibleEnd)) ||
           (Math.abs(position) < 0.1 && Math.abs(velocity) < 0.1)
         )
           return;
@@ -6687,12 +6834,20 @@ export class AmLyrics extends LitElement {
       const targets = chars.length ? chars : [segment];
       let segmentWidth = 0;
       for (const element of targets) {
-        const fragmentWidth = Number.parseFloat(
-          getComputedStyle(element).width,
-        );
+        const style = getComputedStyle(element);
+        const fragmentWidth = Number.parseFloat(style.width);
         // eslint-disable-next-line no-continue
         if (!Number.isFinite(fragmentWidth) || fragmentWidth <= 0) continue;
-        fragments.push({ element, width: fragmentWidth, offset: width });
+        fragments.push({
+          element,
+          width: fragmentWidth,
+          offset: width,
+          fontSize: Number.parseFloat(style.fontSize),
+          padding: Math.max(
+            Number.parseFloat(style.paddingLeft) || 0,
+            Number.parseFloat(style.paddingRight) || 0,
+          ),
+        });
         width += fragmentWidth;
         segmentWidth += fragmentWidth;
       }
@@ -6727,6 +6882,8 @@ export class AmLyrics extends LitElement {
       rtl: syllable.classList.contains('rtl-text'),
       animations: [],
       epoch: start,
+      prepared: false,
+      settled: false,
     };
     words.forEach(element => AmLyrics.wordWipes.set(element, wipe));
     return wipe;
@@ -6736,8 +6893,28 @@ export class AmLyrics extends LitElement {
     wipe: WordWipe,
     time: number,
     epoch = wipe.start,
+    restore = false,
   ): void {
-    if (wipe.animations.length) return;
+    if (wipe.animations.length) {
+      if (restore) {
+        for (const animation of wipe.animations) {
+          // eslint-disable-next-line no-continue
+          if (animation.playState !== 'idle') continue;
+          animation.play();
+          animation.currentTime = Math.max(
+            0,
+            Math.min(
+              time - wipe.epoch,
+              Number(animation.effect?.getComputedTiming().endTime),
+            ),
+          );
+        }
+        // eslint-disable-next-line no-param-reassign
+        wipe.settled = false;
+      }
+      return;
+    }
+    if (wipe.settled && !restore) return;
     const startEpoch = Math.min(epoch, wipe.start);
     const duration = Math.max(1, wipe.end - startEpoch);
     const stops: Array<{ offset: number; progress: number; pre?: boolean }> =
@@ -6759,11 +6936,19 @@ export class AmLyrics extends LitElement {
     stops.push({ offset: 1, progress: wipe.width });
     const wordWipe = wipe;
     wordWipe.epoch = startEpoch;
+    wordWipe.prepared = true;
+    wordWipe.settled = false;
     wipe.syllables.forEach(syllable => {
       const target = syllable;
       target.style.animation = 'none';
     });
-    for (const { element, width, offset } of wipe.fragments) {
+    for (const {
+      element,
+      width,
+      offset,
+      fontSize,
+      padding,
+    } of wipe.fragments) {
       AmLyrics.applyWipeShape(element, wipe.count, wipe.cjk);
       element.style.setProperty('--word-wipe-width', `${wipe.width}px`);
       element.style.backgroundColor = 'var(--lyplus-text-secondary)';
@@ -6771,41 +6956,110 @@ export class AmLyrics extends LitElement {
       element.style.animation = 'none';
       element.classList.add('shared-word-wipe');
       element.classList.toggle('word-wipe-rtl', wipe.rtl);
-      const frames = stops.map(stop => {
-        const x = wipe.rtl
-          ? width + offset - stop.progress
-          : -offset - wipe.width + stop.progress;
-        const feather = (wipe.rtl ? !stop.pre : stop.pre)
-          ? ' - var(--wipe-gradient-width, 0.75em)'
-          : '';
-        return {
-          offset: stop.offset,
-          backgroundPosition: `calc(${x}px${feather}) 0%`,
-        };
+      const feather =
+        fontSize *
+        Number.parseFloat(
+          element.style.getPropertyValue('--wipe-gradient-width'),
+        );
+      // Hold invisible/fully lit fragments still. Insert exact crossing times
+      // so the shared edge keeps its original speed, softness and syllable stops.
+      const lower = offset - feather - padding;
+      const upper = offset + width + padding;
+      const positions = stops.map(stop => ({
+        offset: stop.offset,
+        edge: stop.progress - (stop.pre ? feather : 0),
+      }));
+      const samples: typeof positions = [];
+      positions.forEach((stop, index) => {
+        const previous = positions[index - 1];
+        if (previous && stop.edge > previous.edge) {
+          for (const edge of [lower, upper]) {
+            if (edge > previous.edge && edge < stop.edge)
+              samples.push({
+                offset:
+                  previous.offset +
+                  ((edge - previous.edge) / (stop.edge - previous.edge)) *
+                    (stop.offset - previous.offset),
+                edge,
+              });
+          }
+        }
+        samples.push(stop);
       });
-      const animation = element.animate(frames, {
-        duration,
+      const frames = samples.map(stop => {
+        const edge = AmLyrics.clamp(stop.edge, lower, upper);
+        const x = wipe.rtl
+          ? width + offset - edge - feather
+          : -offset - wipe.width + edge;
+        return { offset: stop.offset, backgroundPosition: `${x}px 0%` };
+      });
+      const finalPosition = frames[frames.length - 1].backgroundPosition;
+      element.style.backgroundPosition = finalPosition;
+      // eslint-disable-next-line no-continue
+      if (time >= wipe.end && !restore) continue;
+      let first = 0;
+      let last = frames.length - 1;
+      while (
+        first < last &&
+        frames[first].backgroundPosition ===
+          frames[first + 1].backgroundPosition
+      )
+        first += 1;
+      while (
+        last > first &&
+        frames[last].backgroundPosition === frames[last - 1].backgroundPosition
+      )
+        last -= 1;
+      // eslint-disable-next-line no-continue
+      if (first === last) continue;
+      const from = frames[first].offset;
+      const range = frames[last].offset - from;
+      const localFrames =
+        range > 0
+          ? frames.slice(first, last + 1).map(frame => ({
+              ...frame,
+              offset: (frame.offset - from) / range,
+            }))
+          : frames;
+      const animation = element.animate(localFrames, {
+        delay: range > 0 ? from * duration : 0,
+        duration: range > 0 ? range * duration : duration,
         easing: 'linear',
         fill: 'both',
       });
       animation.currentTime = Math.max(
         0,
-        Math.min(time - startEpoch, duration),
+        Math.min(
+          time - startEpoch,
+          range > 0 ? frames[last].offset * duration : duration,
+        ),
       );
       AmLyrics.wipeClocks.set(animation, startEpoch);
       wipe.animations.push(animation);
+      animation.onfinish = () => {
+        if (!wordWipe.prepared || !wordWipe.animations.includes(animation))
+          return;
+        animation.cancel();
+        wordWipe.settled = wordWipe.animations.every(
+          effect => effect.playState === 'idle',
+        );
+      };
     }
+    if (!wipe.animations.length) wordWipe.settled = true;
   }
 
   private static clearWordWipe(word: HTMLElement): void {
     const wipe = AmLyrics.wordWipes.get(word);
-    if (!wipe || !wipe.animations.length) return;
+    if (!wipe || !wipe.prepared) return;
     wipe.animations.forEach(animation => animation.cancel());
     wipe.animations = [];
+    wipe.prepared = false;
+    wipe.settled = false;
     wipe.fragments.forEach(({ element }) => {
       element.classList.remove('shared-word-wipe', 'word-wipe-rtl');
       element.style.removeProperty('background-color');
       element.style.removeProperty('background-size');
+      element.style.removeProperty('background-position');
       element.style.removeProperty('animation');
     });
   }
@@ -7368,6 +7622,8 @@ export class AmLyrics extends LitElement {
       end: number;
       key: object;
       glowEpoch: number;
+      settled: boolean;
+      finalTransform: string;
     }
   >();
 
@@ -7375,9 +7631,38 @@ export class AmLyrics extends LitElement {
     const entry = AmLyrics.characterAnimations.get(char);
     if (!entry) return;
     entry.animation.cancel();
+    if (entry.settled) {
+      const target = char.parentElement?.classList.contains('char-motion')
+        ? char.parentElement
+        : char;
+      target.style.removeProperty('transform');
+    }
     AmLyrics.characterAnimations.delete(char);
     char.classList.remove('native-motion');
     char.removeAttribute('data-glow');
+  }
+
+  private static resumeCharacterMotion(
+    char: HTMLElement,
+    elapsed: number,
+  ): void {
+    const entry = AmLyrics.characterAnimations.get(char);
+    if (!entry?.settled) return;
+    const target = char.parentElement?.classList.contains('char-motion')
+      ? char.parentElement
+      : char;
+    target.style.removeProperty('transform');
+    entry.settled = false;
+    entry.animation.play();
+    entry.animation.currentTime = elapsed;
+    if (Number(char.style.getPropertyValue('--char-glow-max')) > 0) {
+      char.style.setProperty(
+        '--char-glow-delay',
+        `${Number(entry.animation.effect?.getTiming().delay) - elapsed}ms`,
+      );
+      char.setAttribute('data-glow', '');
+      entry.glowEpoch = elapsed;
+    }
   }
 
   private static updateCharacterMotion(
@@ -7515,8 +7800,27 @@ export class AmLyrics extends LitElement {
             easing: 'linear',
           });
           animation.currentTime = Math.min(elapsed, end);
-          entry = { animation, start, end, key, glowEpoch: elapsed };
+          entry = {
+            animation,
+            start,
+            end,
+            key,
+            glowEpoch: elapsed,
+            settled: false,
+            finalTransform: frames[frames.length - 1].transform,
+          };
           AmLyrics.characterAnimations.set(char, entry);
+          const motion = entry;
+          animation.onfinish = () => {
+            if (AmLyrics.characterAnimations.get(char) !== motion) return;
+            motionTarget.style.transform = motion.finalTransform;
+            motion.settled = true;
+            char.removeAttribute('data-glow');
+            animation.cancel();
+          };
+        } else if (entry.settled) {
+          if (elapsed < entry.end)
+            AmLyrics.resumeCharacterMotion(char, elapsed);
         } else if (
           Math.abs(
             Number(entry.animation.currentTime) - Math.min(elapsed, entry.end),
@@ -7552,6 +7856,17 @@ export class AmLyrics extends LitElement {
   }
 
   private static seekLineWipes(line: HTMLElement, time: number): void {
+    for (const word of AmLyrics.motionWords.get(line) || []) {
+      if (
+        word.wipe &&
+        time < word.wipe.end &&
+        (word.wipe.settled ||
+          word.wipe.animations.some(
+            animation => animation.playState === 'idle',
+          ))
+      )
+        AmLyrics.startWordWipe(word.wipe, time, word.wipe.epoch, true);
+    }
     line.getAnimations({ subtree: true }).forEach(animation => {
       const epoch = AmLyrics.wipeClocks.get(animation);
       if (epoch !== undefined) {
