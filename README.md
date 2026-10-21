@@ -13,10 +13,10 @@ This web component is my take on Apple Music's word by word lyrics, utilises var
 ## Installation
 
 ```bash
-npm install @uimaxbai/am-lyrics # For react users and those crazy enough to not use the CDN
+npm install @uimaxbai/am-lyrics # Or your package manager of choice
 ```
 
-Or just use the CDN.
+Or just use CDN (below).
 
 ## Usage
 
@@ -109,18 +109,13 @@ am-lyrics {
 }
 ```
 
-The component automatically uses a 28px compact preset below 520px and a 48px
-wide preset from 900px. The compact and wide variables above override those
-responsive values. CSS variables take precedence over the properties above.
+## Sources
 
-## Lyrics matching
+Thank you to these providers who generously allow me to use their lyrics in my component:
 
-1. lrc.red is the highest-priority provider. An `isrc` requests `/s/{isrc}.song.json` directly, with a three-second timeout. Otherwise, `song-title` and `song-artist` use `/match.json`, including optional album and duration (converted from milliseconds to seconds). A standalone `query` uses `/search.json?q=...`. Match and search results supply the ISRC for the song JSON. If a direct ISRC lookup fails, the component tries the supplied track/artist or query.
-2. BiniLyrics comes next, followed by Spicy Lyrics, then the existing Unison, LyricsPlus, LRCLIB, and Genius fallbacks as metadata and synchronization quality allow. If lrc.red returns `byModel: true`, BiniLyrics is skipped and Spicy Lyrics is preferred; the model result remains available if Spicy has no lyrics.
-   If lrc.red only has line-synced lyrics, the component checks Spicy Lyrics, then Unison for word-synced lyrics before falling back to the lrc.red lines. lrc.red's song metadata also enables this lookup when only an ISRC was supplied.
-3. Spicy Lyrics accepts Spotify track IDs. Supply `spotify-id` directly, or the component searches Spotify by ISRC (including the ISRC matched by lrc.red), then by track/artist when no ISRC is available. Spotify tokens are fetched with a POST to the token service and cached in memory until shortly before their returned expiry; a rejected token is refreshed once. Lookup failures fall through to the remaining sources. The Spicy client key must allow your app's origin in its dashboard. Spicy supports word, line and untimed lyrics, background vocals, and supplied translations/romanizations.
+[lrc.red](https://lrc.red), [BiniLyrics](https://lyrics.binimum.org), [Spicy Lyrics](https://spicylyrics.org), [Unison](https://unison.boidu.dev), [LRCLib](https://lrclib.net/), [Genius](https://genius.com/)
 
-The footer shows the active provider and lets you load alternative sources. Community Spicy Lyrics syncs show linked contributor avatars with username tooltips. lrc.red's JSON includes the original TTML, which is preserved for rendering and TTML downloads, including its timing, background vocals, and metadata. LRC and plain-text exports remain available for individual tracks.
+And also thank you to anyone I might have missed!
 
 ## Events
 
@@ -349,18 +344,18 @@ See [`demo/index.html`](./demo/index.html) for a functional demo.
 ### Dependencies
 
 ```bash
-npm i # may take ages
+npm i
 yarn install
 bun i
 ```
 
-### Local developer demo with `web-dev-server`
+### Local demo with `web-dev-server`
 
 ```bash
 npm start
 ```
 
-### Linting and formatting
+### The usual
 
 To scan the project for linting and formatting errors, run
 
