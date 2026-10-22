@@ -9,7 +9,7 @@ import type {
   Syllable,
 } from './LyricsSources.js';
 
-const VERSION = '1.8.4';
+const VERSION = '1.8.5';
 const SPICY_LYRICS_CLIENT_KEY =
   'sl_pk_8nNuJf0L-xFUv8L5uU-pfin69WU4j3IzzV2-T3GPWKY';
 const SPOTIFY_TOKEN_URL =
@@ -892,10 +892,10 @@ export class AmLyrics extends LitElement {
 
     .lyrics-line.active:not(.lyrics-gap)
       .background-vocal-container
-      .lyrics-syllable.finished,
+      .lyrics-syllable.finished:not(.has-chars),
     .lyrics-line.pre-active
       .background-vocal-container
-      .lyrics-syllable.finished {
+      .lyrics-syllable.finished:not(.has-chars) {
       background-color: color-mix(
         in srgb,
         var(--lyplus-text-primary) 50%,
@@ -982,7 +982,7 @@ export class AmLyrics extends LitElement {
     }
 
     /* Syllable with chars: make syllable transparent, chars handle color */
-    .lyrics-line .lyrics-syllable.has-chars:not(.finished) {
+    .lyrics-line .lyrics-word .lyrics-syllable.has-chars {
       background-color: transparent;
       color: transparent;
     }
@@ -1009,7 +1009,10 @@ export class AmLyrics extends LitElement {
 
     .lyrics-syllable span.char {
       display: inline-block;
-      background-color: var(--lyplus-text-secondary);
+      background-color: var(
+        --word-inactive-color,
+        var(--lyplus-text-secondary)
+      );
       white-space: break-spaces;
       font-variant-ligatures: none;
       font-feature-settings: 'liga' 0;
@@ -1121,6 +1124,13 @@ export class AmLyrics extends LitElement {
       animation-delay: var(--pre-wipe-delay);
       animation-timing-function: linear;
       animation-fill-mode: forwards;
+    }
+
+    /* Unscheduled glyphs have no edge to paint into their overhang padding. */
+    .lyrics-line.active
+      .lyrics-syllable:not(.highlight):not(.pre-highlight):not(.finished)
+      span.char:not(.shared-word-wipe) {
+      background-image: none;
     }
 
     /* Joined syllables share one gradient edge. */
@@ -2451,7 +2461,8 @@ export class AmLyrics extends LitElement {
         .forEach(fragment => {
           const target = fragment;
           target.style.transition = 'none';
-          target.style.backgroundColor = 'var(--lyplus-text-secondary)';
+          target.style.backgroundColor =
+            'var(--word-inactive-color, var(--lyplus-text-secondary))';
         }),
     );
     const started = performance.now();
@@ -7337,8 +7348,8 @@ export class AmLyrics extends LitElement {
                 target.style.getPropertyValue('--wipe-gradient-width'),
               );
             target.style.backgroundPosition = wipe.rtl
-              ? `${fragment.width + fragment.padding}px 0%`
-              : `${-wipe.width - feather - fragment.padding}px 0%`;
+              ? `${(fragment.width + fragment.padding) / fragment.fontSize}em 0%`
+              : `${(-wipe.width - feather - fragment.padding) / fragment.fontSize}em 0%`;
           }
           animation.play();
           animation.currentTime = Math.min(
@@ -7379,11 +7390,7 @@ export class AmLyrics extends LitElement {
       const target = syllable;
       target.style.animation = 'none';
     });
-    const enterFromOutside =
-      startEpoch === wipe.start &&
-      wipe.fragments.some(fragment =>
-        fragment.element.classList.contains('char'),
-      );
+    const enterFromOutside = startEpoch === wipe.start;
     for (const {
       element,
       width,
@@ -7392,9 +7399,12 @@ export class AmLyrics extends LitElement {
       padding,
     } of wipe.fragments) {
       AmLyrics.applyWipeShape(element, wipe.count, wipe.cjk);
-      element.style.setProperty('--word-wipe-width', `${wipe.width}px`);
-      element.style.backgroundColor = 'var(--lyplus-text-secondary)';
-      element.style.backgroundSize = `calc(${wipe.width}px + var(--wipe-gradient-width, 0.75em)) 100%`;
+      // Keep the edge and feather in the same units when the font size changes.
+      const wordWidthEm = wipe.width / fontSize;
+      element.style.setProperty('--word-wipe-width', `${wordWidthEm}em`);
+      element.style.backgroundColor =
+        'var(--word-inactive-color, var(--lyplus-text-secondary))';
+      element.style.backgroundSize = `calc(${wordWidthEm}em + var(--wipe-gradient-width, 0.75em)) 100%`;
       element.style.animation = 'none';
       element.classList.add('shared-word-wipe');
       element.classList.toggle('word-wipe-rtl', wipe.rtl);
@@ -7439,14 +7449,17 @@ export class AmLyrics extends LitElement {
         const x = wipe.rtl
           ? width + offset - edge - feather
           : -offset - wipe.width + edge;
-        return { offset: stop.offset, backgroundPosition: `${x}px 0%` };
+        return {
+          offset: stop.offset,
+          backgroundPosition: `${x / fontSize}em 0%`,
+        };
       });
       const finalPosition = frames[frames.length - 1].backgroundPosition;
       // Keep pending/delayed effects unlit. A fully lit fallback can show
       // through before the native effect reaches its first painted frame.
       const unlitPosition = wipe.rtl
-        ? `${width + padding}px 0%`
-        : `${-wipe.width - feather - padding}px 0%`;
+        ? `${(width + padding) / fontSize}em 0%`
+        : `${(-wipe.width - feather - padding) / fontSize}em 0%`;
       element.style.backgroundPosition = unlitPosition;
       if (time >= wipe.end && !restore) {
         element.style.backgroundPosition = finalPosition;
@@ -7834,7 +7847,7 @@ export class AmLyrics extends LitElement {
     // eslint-disable-next-line no-param-reassign
     syllable.style.backgroundColor = syllable.classList.contains('has-chars')
       ? 'transparent'
-      : 'var(--lyplus-text-secondary)';
+      : 'var(--word-inactive-color, var(--lyplus-text-secondary))';
 
     // Reset character animations — disable transition so finished chars don't slowly fade
     const charSpans = syllable.querySelectorAll('span.char');
@@ -7843,7 +7856,8 @@ export class AmLyrics extends LitElement {
       el.style.animation = '';
       AmLyrics.clearCharacterMotion(el);
       el.style.transition = 'none';
-      el.style.backgroundColor = 'var(--lyplus-text-secondary)';
+      el.style.backgroundColor =
+        'var(--word-inactive-color, var(--lyplus-text-secondary))';
       AmLyrics.clearPreWipeLead(el);
     }
 
@@ -8497,13 +8511,8 @@ export class AmLyrics extends LitElement {
                   );
                 }
                 classList.add('finished');
-                if (syllable.classList.contains('shared-word-wipe'))
-                  syllable.style.removeProperty('background-color');
-                AmLyrics.getCachedCharSpans(syllable).forEach(char => {
-                  if (char.classList.contains('shared-word-wipe'))
-                    char.style.removeProperty('background-color');
-                });
-                // Keep the completed wipe state until user scroll resets it.
+                // The shared edge owns the fill, including joined syllables.
+                // Keep its dim base underneath as individual segments finish.
               }
             } else if (hasHighlight || hasFinished) {
               // Not yet started
