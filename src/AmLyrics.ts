@@ -9,7 +9,7 @@ import type {
   Syllable,
 } from './LyricsSources.js';
 
-const VERSION = '1.8.6';
+const VERSION = '1.8.7';
 const SPICY_LYRICS_CLIENT_KEY =
   'sl_pk_8nNuJf0L-xFUv8L5uU-pfin69WU4j3IzzV2-T3GPWKY';
 const SPOTIFY_TOKEN_URL =
@@ -2859,7 +2859,7 @@ export class AmLyrics extends LitElement {
         const title = resolvedMetadata.metadata.title?.trim() || '';
         const artist = resolvedMetadata.metadata.artist?.trim() || '';
 
-        if (!lrcRedResult) {
+        if (!lrcRedResult?.byModel) {
           const biniResult = await AmLyrics.fetchLyricsFromBiniLyrics(
             title,
             artist,
@@ -2894,10 +2894,7 @@ export class AmLyrics extends LitElement {
           if (controller.signal.aborted) return;
         }
 
-        if (
-          !lrcRedResult &&
-          (collectedSources.length === 0 || !hasWordSync(collectedSources))
-        ) {
+        if (!hasWordSync(collectedSources)) {
           const youLyResults = await AmLyrics.fetchLyricsFromYouLyPlus(
             title,
             artist,
@@ -2914,7 +2911,11 @@ export class AmLyrics extends LitElement {
       }
 
       const hasLineSync = (sources: YouLyPlusLyricsResult[]) =>
-        sources.some(s => s.lines.some(l => l.timestamp > 0 || l.endtime > 0));
+        sources.some(
+          s =>
+            AmLyrics.hasWordSyncedLyrics(s.lines) ||
+            (!s.byModel && AmLyrics.getTimingRank(s.lines) < 2),
+        );
 
       if (
         (collectedSources.length === 0 || !hasLineSync(collectedSources)) &&
@@ -3009,52 +3010,51 @@ export class AmLyrics extends LitElement {
   private static hasWordSyncedLyrics(lines: LyricsLine[]): boolean {
     return lines.some(
       line =>
-        line.isWordSynced ??
-        (line.text.length > 1 && !line.text.every(s => s.lineSynced)),
+        line.text.some(
+          s => s.text.trim() && (s.timestamp > 0 || s.endtime > 0),
+        ) &&
+        (line.isWordSynced ??
+          (line.text.length > 1 && !line.text.every(s => s.lineSynced))),
     );
   }
 
-  private static getRankForCollected(
-    sourceLabel: string,
-    parsedLines: any[],
-  ): number {
-    const lower = sourceLabel.toLowerCase();
+  private static getTimingRank(lines: LyricsLine[]): number {
+    if (AmLyrics.hasWordSyncedLyrics(lines)) return 0;
+    return lines.some(
+      line =>
+        line.text.some(s => s.text.trim()) &&
+        (line.timestamp > 0 || line.endtime > 0),
+    )
+      ? 1
+      : 2;
+  }
+
+  private static getRankForCollected(sourceLabel: string): number {
+    const lower = sourceLabel.trim().toLowerCase();
     if (lower === 'lrc.red') return 0;
-    if (lower.includes('bini')) return 2;
+    // Spicy catalogue labels belong to Spicy, including "(Apple Music)".
     if (lower.startsWith('spicy lyrics')) return 2.5;
-    const hasWordSync = AmLyrics.hasWordSyncedLyrics(parsedLines);
-    const isUnsynced =
-      parsedLines.length > 0 &&
-      parsedLines.every(
-        (line: any) => line.timestamp === 0 && line.endtime === 0,
-      );
-    const isQQ = lower.includes('qq') || lower.includes('lyricsplus');
+    if (lower.includes('apple')) return 1;
+    if (lower.includes('bini')) return 2;
+    if (lower.includes('unison')) return 3;
+    if (lower.includes('qq') || lower.includes('lyricsplus')) return 4;
+    if (lower.includes('musixmatch')) return 5;
+    if (lower.includes('lrclib')) return 6;
+    if (lower.includes('genius')) return 8;
+    return 7;
+  }
 
-    if (lower.includes('apple') && hasWordSync) return 1;
-    if (lower.includes('bini') && hasWordSync) return 2;
-    if (lower.includes('unison') && hasWordSync) return 3;
-    if (isQQ && hasWordSync) return 4;
-    if (lower.includes('musixmatch') && hasWordSync) return 5;
-    if (lower.includes('lrclib') && hasWordSync) return 6;
-    if (hasWordSync) return 7;
-
-    if (lower.includes('apple') && !hasWordSync && !isUnsynced) return 8;
-    if (lower.includes('bini') && !hasWordSync && !isUnsynced) return 9;
-    if (lower.includes('unison') && !hasWordSync && !isUnsynced) return 10;
-    if (isQQ && !hasWordSync && !isUnsynced) return 11;
-    if (lower.includes('musixmatch') && !hasWordSync && !isUnsynced) return 12;
-    if (lower.includes('lrclib') && !hasWordSync && !isUnsynced) return 13;
-    if (!hasWordSync && !isUnsynced) return 14;
-
-    if (lower.includes('apple') && isUnsynced) return 15;
-    if (lower.includes('bini') && isUnsynced) return 16;
-    if (lower.includes('unison') && isUnsynced) return 17;
-    if (isQQ && isUnsynced) return 18;
-    if (lower.includes('musixmatch') && isUnsynced) return 19;
-    if (lower.includes('lrclib') && isUnsynced) return 20;
-    if (lower.includes('genius')) return 21;
-
-    return 30;
+  private static compareSources(
+    a: YouLyPlusLyricsResult,
+    b: YouLyPlusLyricsResult,
+  ): number {
+    // Word > line > plain; prefer non-model results within each timing tier.
+    return (
+      AmLyrics.getTimingRank(a.lines) - AmLyrics.getTimingRank(b.lines) ||
+      Number(Boolean(a.byModel)) - Number(Boolean(b.byModel)) ||
+      AmLyrics.getRankForCollected(a.source) -
+        AmLyrics.getRankForCollected(b.source)
+    );
   }
 
   private static getDisplaySourceLabel(sourceLabel: string): string {
@@ -3075,29 +3075,20 @@ export class AmLyrics extends LitElement {
   ): YouLyPlusLyricsResult[] {
     const uniqueSourcesMap = new Map<string, YouLyPlusLyricsResult>();
 
-    for (const source of collectedSources) {
-      const normalizedSource = AmLyrics.getDisplaySourceLabel(source.source);
-
-      if (!uniqueSourcesMap.has(normalizedSource)) {
-        uniqueSourcesMap.set(normalizedSource, {
+    collectedSources.forEach(source => {
+      if (!source.lines.some(line => line.text.some(s => s.text.trim())))
+        return;
+      const key = AmLyrics.getSourceKey(source.source);
+      const previous = uniqueSourcesMap.get(key);
+      if (!previous || AmLyrics.compareSources(source, previous) < 0) {
+        uniqueSourcesMap.set(key, {
           ...source,
-          source: normalizedSource,
+          source: AmLyrics.getDisplaySourceLabel(source.source),
         });
       }
-    }
-
-    const sources = Array.from(uniqueSourcesMap.values());
-    return sources.sort((a, b) => {
-      // Timing quality takes precedence over provider and model priorities.
-      const timingRank =
-        Number(AmLyrics.hasWordSyncedLyrics(b.lines)) -
-        Number(AmLyrics.hasWordSyncedLyrics(a.lines));
-      if (timingRank) return timingRank;
-      return (
-        (a.byModel ? 2.75 : AmLyrics.getRankForCollected(a.source, a.lines)) -
-        (b.byModel ? 2.75 : AmLyrics.getRankForCollected(b.source, b.lines))
-      );
     });
+
+    return Array.from(uniqueSourcesMap.values()).sort(AmLyrics.compareSources);
   }
 
   private findCurrentSourceIndex(
@@ -3209,12 +3200,13 @@ export class AmLyrics extends LitElement {
             }
           }
 
-          // Try YouLyPlus (KPoe) if we don't have Apple or QQ
+          // Only a non-model Apple word result completes the KPoe upgrade search.
           if (
             !this.availableSources.some(
               s =>
-                s.source.toLowerCase().includes('apple') ||
-                s.source.toLowerCase().includes('qq'),
+                !s.byModel &&
+                AmLyrics.getRankForCollected(s.source) === 1 &&
+                AmLyrics.hasWordSyncedLyrics(s.lines),
             )
           ) {
             const title = resolvedMetadata.metadata.title?.trim() || '';
@@ -3863,45 +3855,6 @@ export class AmLyrics extends LitElement {
       params.append('source', DEFAULT_KPOE_SOURCE_ORDER);
     }
 
-    const getRank = (sourceLabel: string, parsedLines: any[]): number => {
-      const lower = sourceLabel.toLowerCase();
-      const hasWordSync = parsedLines.some(
-        (line: any) =>
-          line.text && Array.isArray(line.text) && line.text.length > 1,
-      );
-
-      const isUnsynced =
-        parsedLines.length > 0 &&
-        parsedLines.every(
-          (line: any) => line.timestamp === 0 && line.endtime === 0,
-        );
-
-      const isQQ = lower.includes('qq') || lower.includes('lyricsplus');
-
-      if (lower.includes('apple') && hasWordSync) return 1;
-      if (lower.includes('bini') && hasWordSync) return 2;
-      if (lower.includes('unison') && hasWordSync) return 3;
-      if (isQQ && hasWordSync) return 4;
-      if (lower.includes('musixmatch') && hasWordSync) return 5;
-      if (hasWordSync) return 6;
-
-      if (lower.includes('apple') && !hasWordSync && !isUnsynced) return 7;
-      if (lower.includes('bini') && !hasWordSync && !isUnsynced) return 8;
-      if (lower.includes('unison') && !hasWordSync && !isUnsynced) return 9;
-      if (isQQ && !hasWordSync && !isUnsynced) return 10;
-      if (lower.includes('musixmatch') && !hasWordSync && !isUnsynced)
-        return 11;
-      if (!hasWordSync && !isUnsynced) return 12;
-
-      if (lower.includes('apple') && isUnsynced) return 13;
-      if (lower.includes('bini') && isUnsynced) return 14;
-      if (lower.includes('unison') && isUnsynced) return 15;
-      if (isQQ && isUnsynced) return 16;
-      if (lower.includes('musixmatch') && isUnsynced) return 17;
-
-      return 30;
-    };
-
     const allResults: YouLyPlusLyricsResult[] = [];
 
     if (!skipBiniCache) {
@@ -3913,7 +3866,11 @@ export class AmLyrics extends LitElement {
       );
       if (biniResult) {
         allResults.push(biniResult);
-        return allResults;
+        if (
+          !biniResult.byModel &&
+          AmLyrics.hasWordSyncedLyrics(biniResult.lines)
+        )
+          return allResults;
       }
     }
 
@@ -3948,13 +3905,13 @@ export class AmLyrics extends LitElement {
             payload?.metadata?.provider ||
             'LyricsPlus (KPoe)';
 
-          const rank = getRank(sourceLabel, lines);
+          const rank = AmLyrics.getRankForCollected(sourceLabel);
           const result = { lines, source: sourceLabel };
 
           allResults.push(result);
 
           // If source is Apple synced, we have the best so we can just immediately break the sweep
-          if (rank === 1) {
+          if (rank === 1 && AmLyrics.hasWordSyncedLyrics(lines)) {
             break;
           }
         }
@@ -3964,7 +3921,10 @@ export class AmLyrics extends LitElement {
     // If we haven't found a completely synced result (rank 1 or 2) among the servers,
     // force an explicit query against lyricsplus.binimum.org looking for word lyrics
     const hasHighRankResult = allResults.some(
-      r => getRank(r.source, r.lines) <= 2,
+      r =>
+        AmLyrics.getRankForCollected(r.source) <= 2 &&
+        !r.byModel &&
+        AmLyrics.hasWordSyncedLyrics(r.lines),
     );
 
     if (!hasHighRankResult) {
@@ -3980,10 +3940,7 @@ export class AmLyrics extends LitElement {
               payload?.metadata?.source ||
               payload?.metadata?.provider ||
               'LyricsPlus (KPoe)';
-            const hasWordSync = lines?.some(
-              (line: any) =>
-                line.text && Array.isArray(line.text) && line.text.length > 1,
-            );
+            const hasWordSync = lines && AmLyrics.hasWordSyncedLyrics(lines);
             if (lines && lines.length > 0 && hasWordSync) {
               allResults.push({ lines, source: sourceLabel });
             }
@@ -3994,7 +3951,7 @@ export class AmLyrics extends LitElement {
       }
     }
 
-    return allResults;
+    return AmLyrics.mergeAndSortSources(allResults);
   }
 
   /**
