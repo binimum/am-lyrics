@@ -9,7 +9,7 @@ import type {
   Syllable,
 } from './LyricsSources.js';
 
-const VERSION = '1.8.5';
+const VERSION = '1.8.6';
 const SPICY_LYRICS_CLIENT_KEY =
   'sl_pk_8nNuJf0L-xFUv8L5uU-pfin69WU4j3IzzV2-T3GPWKY';
 const SPOTIFY_TOKEN_URL =
@@ -2853,7 +2853,7 @@ export class AmLyrics extends LitElement {
         ? [lrcRedResult]
         : [];
       const hasWordSync = (sources: YouLyPlusLyricsResult[]) =>
-        sources.some(s => AmLyrics.hasWordSyncedLyrics(s.lines));
+        sources.some(s => !s.byModel && AmLyrics.hasWordSyncedLyrics(s.lines));
 
       if (resolvedMetadata?.metadata && !isMusicIdOnlyRequest) {
         const title = resolvedMetadata.metadata.title?.trim() || '';
@@ -3087,18 +3087,12 @@ export class AmLyrics extends LitElement {
     }
 
     const sources = Array.from(uniqueSourcesMap.values());
-    const upgradeLrcRedLines = sources.some(
-      source =>
-        source.source === 'lrc.red' &&
-        !AmLyrics.hasWordSyncedLyrics(source.lines),
-    );
     return sources.sort((a, b) => {
-      if (upgradeLrcRedLines) {
-        const timingRank =
-          Number(AmLyrics.hasWordSyncedLyrics(b.lines)) -
-          Number(AmLyrics.hasWordSyncedLyrics(a.lines));
-        if (timingRank) return timingRank;
-      }
+      // Timing quality takes precedence over provider and model priorities.
+      const timingRank =
+        Number(AmLyrics.hasWordSyncedLyrics(b.lines)) -
+        Number(AmLyrics.hasWordSyncedLyrics(a.lines));
+      if (timingRank) return timingRank;
       return (
         (a.byModel ? 2.75 : AmLyrics.getRankForCollected(a.source, a.lines)) -
         (b.byModel ? 2.75 : AmLyrics.getRankForCollected(b.source, b.lines))
