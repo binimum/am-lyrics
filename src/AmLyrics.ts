@@ -9,7 +9,7 @@ import type {
   Syllable,
 } from './LyricsSources.js';
 
-const VERSION = '1.8.7';
+const VERSION = '1.8.8';
 const SPICY_LYRICS_CLIENT_KEY =
   'sl_pk_8nNuJf0L-xFUv8L5uU-pfin69WU4j3IzzV2-T3GPWKY';
 const SPOTIFY_TOKEN_URL =
@@ -20,6 +20,7 @@ const LRC_RED_TIMEOUT_MS = 3000;
 const SEEK_THRESHOLD_MS = 500;
 const SCROLL_ANIMATION_DURATION_MS = 350;
 const BACKGROUND_EXIT_DURATION_MS = 450;
+const BACKGROUND_CARRY_MIN_OVERLAP_MS = 800;
 const USER_SCROLL_RESUME_DELAY_MS = 5000;
 const GAP_PULSE_DURATION_MS = 4000;
 const GAP_ENTRY_FADE_MS = 160;
@@ -474,7 +475,7 @@ export class AmLyrics extends LitElement {
 
     .lyrics-line.rtl-text {
       direction: rtl;
-      text-align: right !important;
+      text-align: right;
       transform-origin: right;
     }
 
@@ -486,6 +487,24 @@ export class AmLyrics extends LitElement {
     .lyrics-line.rtl-text .lyrics-romanization-container,
     .lyrics-line.rtl-text .lyrics-translation-container {
       text-align: right;
+    }
+
+    .lyrics-line.rtl-text.singer-right {
+      text-align: left;
+      transform-origin: left;
+    }
+    .lyrics-line.rtl-text.singer-right .lyrics-line-container,
+    .lyrics-line.rtl-text.singer-right .main-vocal-container,
+    .lyrics-line.rtl-text.singer-right .background-vocal-wrap {
+      transform-origin: left center;
+    }
+    .lyrics-line.rtl-text.singer-right .background-vocal-container {
+      margin-left: 0;
+      margin-right: auto;
+    }
+    .lyrics-line.rtl-text.singer-right .lyrics-romanization-container,
+    .lyrics-line.rtl-text.singer-right .lyrics-translation-container {
+      text-align: left;
     }
 
     /* Preserve a clear duet lane without forcing every line into a narrow
@@ -774,6 +793,20 @@ export class AmLyrics extends LitElement {
         -90deg,
         var(--lyplus-text-primary) 0%,
         var(--lyplus-text-primary)
+          calc(100% - var(--wipe-gradient-width, 0.75em)),
+        transparent 100%
+      );
+      background-size: 0% 100%;
+      background-position: right 0%;
+    }
+
+    .lyrics-line.active:not(.lyrics-gap) .lyrics-syllable.wipe-rtl.highlight,
+    .lyrics-line.active:not(.lyrics-gap)
+      .lyrics-syllable.wipe-rtl.pre-highlight {
+      background-image: linear-gradient(
+        -90deg,
+        var(--word-wipe-color, var(--lyplus-text-primary)) 0%,
+        var(--word-wipe-color, var(--lyplus-text-primary))
           calc(100% - var(--wipe-gradient-width, 0.75em)),
         transparent 100%
       );
@@ -1151,7 +1184,7 @@ export class AmLyrics extends LitElement {
         100%;
       transition:
         color 0ms,
-        background-color 0.7s,
+        background-color 0ms,
         transform 1s ease;
     }
 
@@ -1780,12 +1813,7 @@ export class AmLyrics extends LitElement {
     }
 
     .lyrics-romanization-container {
-      direction: ltr !important;
-    }
-
-    .lyrics-romanization-container.rtl-text {
-      direction: rtl !important;
-      text-align: right;
+      unicode-bidi: plaintext;
     }
 
     .lyrics-romanization-container .lyrics-syllable {
@@ -2554,7 +2582,9 @@ export class AmLyrics extends LitElement {
   private getBackgroundWrap(line: HTMLElement): HTMLElement | null {
     let wrap = this.backgroundWraps.get(line);
     if (wrap === undefined) {
-      wrap = line.querySelector<HTMLElement>('.background-vocal-wrap');
+      wrap = line.querySelector<HTMLElement>(
+        '.background-vocal-container:not([data-bg-carried]) .background-vocal-wrap',
+      );
       this.backgroundWraps.set(line, wrap);
     }
     return wrap;
@@ -2655,7 +2685,12 @@ export class AmLyrics extends LitElement {
     vwStartMs: number[];
     vwEndMs: number[];
     lineIsRTL: boolean;
+    mainEnd: number;
+    overlapWordEnds: number[];
+    backgroundEnd: number;
   }> | null = null;
+
+  private backgroundTailIndices: number[] = [];
 
   // Active line tracking
   private activeLineIds: Set<string> = new Set();
@@ -2775,6 +2810,7 @@ export class AmLyrics extends LitElement {
     this.fetchAbortController = controller;
 
     this.isLoading = true;
+    this.sourceUpgrade = false;
     this.lyrics = undefined;
     this.lyricsSource = null;
     this.availableSources = [];
@@ -2836,6 +2872,11 @@ export class AmLyrics extends LitElement {
         return;
       }
 
+      if (lrcRedResult) {
+        this.isFetchingAlternatives = true;
+        await this.publishAvailableSources([lrcRedResult], controller.signal);
+      }
+
       const resolvedMetadata = await this.resolveSongMetadata(
         lrcRedResult?.metadata,
       );
@@ -2867,7 +2908,13 @@ export class AmLyrics extends LitElement {
             resolvedMetadata.metadata,
           );
           if (controller.signal.aborted) return;
-          if (biniResult?.lines.length) collectedSources.push(biniResult);
+          if (biniResult?.lines.length) {
+            collectedSources.push(biniResult);
+            await this.publishAvailableSources(
+              collectedSources,
+              controller.signal,
+            );
+          }
         }
       }
 
@@ -2879,7 +2926,13 @@ export class AmLyrics extends LitElement {
           resolvedMetadata.metadata,
         );
         if (controller.signal.aborted) return;
-        if (spicyResult) collectedSources.push(spicyResult);
+        if (spicyResult) {
+          collectedSources.push(spicyResult);
+          await this.publishAvailableSources(
+            collectedSources,
+            controller.signal,
+          );
+        }
       }
 
       if (resolvedMetadata?.metadata && !isMusicIdOnlyRequest) {
@@ -2890,6 +2943,10 @@ export class AmLyrics extends LitElement {
           );
           if (unisonResult && unisonResult.lines.length > 0) {
             collectedSources.push(unisonResult);
+            await this.publishAvailableSources(
+              collectedSources,
+              controller.signal,
+            );
           }
           if (controller.signal.aborted) return;
         }
@@ -2905,6 +2962,10 @@ export class AmLyrics extends LitElement {
 
           if (youLyResults && youLyResults.length > 0) {
             collectedSources.push(...youLyResults);
+            await this.publishAvailableSources(
+              collectedSources,
+              controller.signal,
+            );
           }
           if (controller.signal.aborted) return;
         }
@@ -2953,17 +3014,13 @@ export class AmLyrics extends LitElement {
         );
       this._updateFooter();
 
-      if (collectedSources.length > 0) {
-        this.availableSources = AmLyrics.mergeAndSortSources(collectedSources);
-
-        this.currentSourceIndex = 0;
-        const sourceResult = this.availableSources[0];
-        this.lyrics = sourceResult.lines;
-        this.lyricsSource = sourceResult.source;
-        if (sourceResult.songwriters) {
-          this.songwriters = sourceResult.songwriters;
-        }
-        await this.onLyricsLoaded();
+      const published = await this.publishAvailableSources(
+        collectedSources,
+        controller.signal,
+      );
+      if (controller.signal.aborted) return;
+      if (published) {
+        if (!this.noAutoAlternates) await this.autoProcessLyrics();
         return;
       }
 
@@ -2973,11 +3030,37 @@ export class AmLyrics extends LitElement {
       // Only update loading state if this fetch wasn't superseded
       if (!controller.signal.aborted) {
         this.isLoading = false;
+        this.isFetchingAlternatives = false;
+        this._updateFooter();
       }
     }
   }
 
-  private async onLyricsLoaded() {
+  private async publishAvailableSources(
+    sources: YouLyPlusLyricsResult[],
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    if (signal?.aborted) return false;
+    this.availableSources = AmLyrics.mergeAndSortSources(sources);
+    const best = this.availableSources[0];
+    if (!best) return false;
+    this.isFetchingAlternatives = true;
+    this.isLoading = false;
+    if (this.lyrics !== best.lines) {
+      this.sourceUpgrade = Boolean(this.lyrics);
+      this.currentSourceIndex = 0;
+      this.lyrics = best.lines;
+      this.lyricsSource = best.source;
+      this.songwriters = best.songwriters;
+      await this.onLyricsLoaded(false);
+    }
+    this._updateFooter();
+    return true;
+  }
+
+  private sourceUpgrade = false;
+
+  private async onLyricsLoaded(processAlternates = true) {
     this.activeLineIndices = [];
     this.preActiveLineElements = [];
     this.positionedLineElements = [];
@@ -2994,7 +3077,8 @@ export class AmLyrics extends LitElement {
       }, 100);
     }
 
-    if (!this.noAutoAlternates) await this.autoProcessLyrics();
+    if (processAlternates && !this.noAutoAlternates)
+      await this.autoProcessLyrics();
   }
 
   private async autoProcessLyrics() {
@@ -4996,6 +5080,11 @@ export class AmLyrics extends LitElement {
         }
       }
 
+      if (isSeek) {
+        for (const entry of this.backgroundCarries.values())
+          if (!entry.exiting) AmLyrics.seekLineWipes(entry.clone, newTime);
+      }
+
       // Tie gap motion directly to playback time. This keeps the entrance,
       // breathing, sequential dots, and exit deterministic across seeks. Only
       // touch the current/previous gap instead of scanning every gap per frame.
@@ -5091,6 +5180,17 @@ export class AmLyrics extends LitElement {
   protected willUpdate(
     changedProperties: Map<string | number | symbol, unknown>,
   ) {
+    if (this.backgroundCarries.size) {
+      if (!changedProperties.has('lyrics'))
+        for (const [index, entry] of this.backgroundCarries)
+          if (!entry.exiting)
+            this.backgroundCarryRestoreTops.set(
+              index,
+              AmLyrics.getBackgroundCarryTop(entry.clone),
+            );
+      this.restoreCarriesAfterRender = true;
+      this.clearBackgroundCarries();
+    }
     if (changedProperties.has('lyrics')) {
       this.cachedLineData = null;
       this._ensureLineDataCache();
@@ -5143,6 +5243,10 @@ export class AmLyrics extends LitElement {
         // Trigger a faux time-change so that updateSyllablesForLine fires
         // to setup inline syllable CSS wipe animations for whatever the current time is
         this._onTimeChanged(0, this.currentTime);
+        if (this.sourceUpgrade) {
+          this.cancelLineScrollAnimation();
+          this.sourceUpgrade = false;
+        }
 
         // Ensure position classes are applied on initial render if not playing yet
         if (this.positionedLineElements.length === 0) {
@@ -5197,6 +5301,11 @@ export class AmLyrics extends LitElement {
       }
     }
     this.pendingRenderLayout = undefined;
+    if (this.restoreCarriesAfterRender) {
+      this.restoreCarriesAfterRender = false;
+      this._handleActiveLineScroll(true);
+      this.backgroundCarryRestoreTops.clear();
+    }
     if (changedProperties.has('noBlur') && this.noBlur) {
       this.clearProgressiveBlurLine();
     }
@@ -5431,15 +5540,24 @@ export class AmLyrics extends LitElement {
 
     // Commit backing spacing before measuring the destination. Its displacement
     // and scrolling share the same spring rather than competing height tweens.
+    const carryChanged = this.syncBackgroundCarries(
+      targetElement,
+      predictiveTime,
+    );
     const layoutChanged = this.setBackgroundExpandedLine(
       targetElement,
       true,
       predictiveActiveIndices,
       predictiveTime,
     );
-    this.focusLine(targetElement, forceScroll || layoutChanged, scrollDuration);
+    this.focusLine(
+      targetElement,
+      forceScroll || layoutChanged || carryChanged,
+      scrollDuration,
+    );
     if (this.pendingLayoutOffsets.size)
       this.finishLyricLayout(this.captureLyricLayout());
+    this.animateBackgroundCarries();
   }
 
   private _rebuildDomCache() {
@@ -5461,7 +5579,10 @@ export class AmLyrics extends LitElement {
         `#lyrics-line-${i}`,
       ) as HTMLElement | null;
       if (lineEl) {
+        if (this.sourceUpgrade)
+          lineEl.classList.remove('active', 'pre-active', 'scroll-exiting');
         this.lineElementCache.set(i, lineEl);
+        AmLyrics.resetSyllables(lineEl);
         (lineEl as any)._cachedSyllableElements = null;
         AmLyrics.motionWords.delete(lineEl);
         AmLyrics.motionSyllables.delete(lineEl);
@@ -5601,14 +5722,60 @@ export class AmLyrics extends LitElement {
       : 'none';
   }
 
+  private static overlapSegmenter = (Intl as any).Segmenter
+    ? new (Intl as any).Segmenter(undefined, { granularity: 'word' })
+    : null;
+
+  private static getOverlapWordEnds(syllables: Syllable[]): number[] {
+    const text = syllables.map(s => s.text).join('');
+    const segments: Array<{
+      index: number;
+      segment: string;
+      isWordLike?: boolean;
+    }> = AmLyrics.overlapSegmenter
+      ? Array.from(AmLyrics.overlapSegmenter.segment(text))
+      : Array.from(
+          text.matchAll(
+            /[\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]|[^\s\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]+/g,
+          ),
+          match => ({ index: match.index!, segment: match[0] }),
+        );
+    let offset = 0;
+    const spans = syllables.map(syllable => {
+      const start = offset;
+      offset += syllable.text.length;
+      return { syllable, start, end: offset };
+    });
+    return segments
+      .filter(
+        segment =>
+          segment.isWordLike ?? /[^\s.,!?;:…。，！？、]/.test(segment.segment),
+      )
+      .map(segment => {
+        const end = segment.index + segment.segment.length;
+        const span = spans.find(item => end > item.start && end <= item.end)!;
+        return (
+          span.syllable.timestamp +
+          (span.syllable.endtime - span.syllable.timestamp) *
+            ((end - span.start) / Math.max(1, span.end - span.start))
+        );
+      });
+  }
+
   private _ensureLineDataCache() {
     if (this.cachedLineData || !this.lyrics) return;
-    this.cachedLineData = this.lyrics.map(line => {
+    this.backgroundTailIndices = [];
+    this.cachedLineData = this.lyrics.map((line, index) => {
+      if (
+        line.backgroundText.length &&
+        AmLyrics.getBackgroundTextPlacement(line) === 'after'
+      )
+        this.backgroundTailIndices.push(index);
       const wordGroups: Syllable[][] = [];
       let group: Syllable[] = [];
-      line.text.forEach((syllable, index) => {
+      line.text.forEach((syllable, syllableIndex) => {
         group.push(syllable);
-        const next = line.text[index + 1];
+        const next = line.text[syllableIndex + 1];
         if (!next || /\s$/.test(syllable.text) || /^\s/.test(next.text)) {
           wordGroups.push(group);
           group = [];
@@ -5636,6 +5803,12 @@ export class AmLyrics extends LitElement {
       });
       return {
         wordGroups,
+        mainEnd: Math.max(line.timestamp, ...line.text.map(s => s.endtime)),
+        overlapWordEnds: AmLyrics.getOverlapWordEnds(line.text),
+        backgroundEnd: Math.max(
+          line.timestamp,
+          ...line.backgroundText.map(s => s.endtime),
+        ),
         groupGrowable: words.map(word => word.mode === 'emphasis'),
         groupGlowing: words.map(word => word.mode === 'emphasis'),
         groupCharRise: words.map(word => word.mode === 'rise'),
@@ -5682,6 +5855,13 @@ export class AmLyrics extends LitElement {
     return a.length === b.length && a.every((val, i) => val === b[i]);
   }
 
+  private static isOppositeAgent(line: LyricsLine): boolean {
+    return (
+      line.alignment === 'end' ||
+      (line.alignment === undefined && line.oppositeTurn)
+    );
+  }
+
   private static isLineSyncedLine(line: LyricsLine | undefined): boolean {
     if (!line) return false;
     return line.isWordSynced === false || line.text.some(s => s.lineSynced);
@@ -5715,6 +5895,11 @@ export class AmLyrics extends LitElement {
     if (!nextLine || nextLine.timestamp <= line.timestamp) {
       return rawEnd > line.timestamp ? rawEnd + 200 : rawEnd;
     }
+
+    this._ensureLineDataCache();
+    const leadEnd = this.cachedLineData?.[index].mainEnd ?? line.endtime;
+    if (backgroundEnd && backgroundEnd > Math.max(leadEnd, nextLine.timestamp))
+      return Math.max(leadEnd, nextLine.timestamp);
 
     if (rawEnd > line.timestamp) {
       if (nextLine.timestamp < rawEnd) {
@@ -6100,6 +6285,7 @@ export class AmLyrics extends LitElement {
   }
 
   private clearBackgroundExpandedLine(): void {
+    this.clearBackgroundCarries();
     for (const animation of this.backgroundAnimations.values())
       animation.cancel();
     for (const line of new Set([
@@ -6112,6 +6298,246 @@ export class AmLyrics extends LitElement {
     for (const { animation } of this.contentSprings.values())
       animation.cancel();
     this.contentSprings.clear();
+  }
+
+  private backgroundCarries = new Map<
+    number,
+    {
+      original: HTMLElement;
+      clone: HTMLElement;
+      sourceLine: HTMLElement;
+      owner: HTMLElement;
+      display: string;
+      exiting: boolean;
+      animation?: Animation;
+      fromTop?: number;
+    }
+  >();
+
+  private restoreCarriesAfterRender = false;
+
+  private backgroundCarryRestoreTops = new Map<number, number>();
+
+  private lastCarryTime = 0;
+
+  private static getBackgroundCarryTop(container: HTMLElement): number {
+    return (
+      container.querySelector<HTMLElement>('.lyrics-word') || container
+    ).getBoundingClientRect().top;
+  }
+
+  private animateBackgroundCarries(): void {
+    for (const entry of this.backgroundCarries.values()) {
+      // eslint-disable-next-line no-continue
+      if (entry.fromTop === undefined || entry.exiting) continue;
+      const { fromTop } = entry;
+      entry.fromTop = undefined;
+      // eslint-disable-next-line no-continue
+      if (this.shouldReduceMotion || this.lineMotion === 'instant') continue;
+      // Measure after the new line's scroll/layout springs have committed.
+      // The local spring and its parent then share the same displacement curve.
+      const scale =
+        entry.clone.getBoundingClientRect().height /
+        Math.max(1, entry.clone.offsetHeight);
+      const delta =
+        (fromTop - AmLyrics.getBackgroundCarryTop(entry.clone)) /
+        Math.max(0.01, scale);
+      const animation = entry.clone.animate(
+        AmLyrics.createLineSpringFrames(delta, 0),
+        { duration: 1200, easing: 'linear', fill: 'both' },
+      );
+      entry.animation = animation;
+      animation.onfinish = () => {
+        if (entry.animation !== animation) return;
+        animation.cancel();
+        entry.animation = undefined;
+      };
+    }
+  }
+
+  private static invalidateVocalCache(line: HTMLElement): void {
+    AmLyrics.motionWords.delete(line);
+    AmLyrics.motionSyllables.delete(line);
+    const target = line as any;
+    target._cachedSyllableElements = null;
+  }
+
+  private removeBackgroundCarry(index: number): void {
+    const entry = this.backgroundCarries.get(index);
+    if (!entry) return;
+    entry.animation?.cancel();
+    AmLyrics.resetSyllables(entry.clone);
+    entry.clone.getAnimations({ subtree: true }).forEach(a => a.cancel());
+    entry.clone.remove();
+    entry.original.style.display = entry.display;
+    entry.original.removeAttribute('data-bg-suspended');
+    AmLyrics.invalidateVocalCache(entry.sourceLine);
+    this.backgroundCarries.delete(index);
+  }
+
+  private clearBackgroundCarries(): void {
+    for (const index of this.backgroundCarries.keys())
+      this.removeBackgroundCarry(index);
+  }
+
+  private syncBackgroundCarries(
+    owner: HTMLElement,
+    predictiveTime: number,
+  ): boolean {
+    if (!this.lyrics) return false;
+    const ownerIndex = AmLyrics.getLineIndexFromElement(owner);
+    if (ownerIndex === null) return false;
+    if (this.currentTime < this.lastCarryTime) this.clearBackgroundCarries();
+    this.lastCarryTime = this.currentTime;
+    const desired = new Set<number>();
+    for (const index of this.backgroundTailIndices) {
+      if (index >= ownerIndex) break;
+      const line = this.lyrics[index];
+      const end = this.cachedLineData?.[index].backgroundEnd ?? line.endtime;
+      const leadEnd = this.cachedLineData?.[index].mainEnd ?? line.endtime;
+      if (
+        end > this.currentTime &&
+        end - Math.max(leadEnd, this.lyrics[ownerIndex].timestamp) >=
+          BACKGROUND_CARRY_MIN_OVERLAP_MS &&
+        leadEnd <=
+          Math.max(this.currentTime, this.lyrics[ownerIndex].timestamp) &&
+        this.lyrics[ownerIndex].timestamp <= predictiveTime &&
+        AmLyrics.getBackgroundTextPlacement(line) === 'after'
+      )
+        desired.add(index);
+    }
+    let changed = false;
+    let before: LyricLayout | undefined;
+    const capture = () => {
+      before ??= this.captureLyricLayout();
+    };
+    Array.from(this.backgroundCarries).forEach(([index, carry]) => {
+      const entry = carry;
+      if (desired.has(index) && !entry.exiting) return;
+      if (entry.exiting) {
+        if (desired.has(index)) this.removeBackgroundCarry(index);
+        return;
+      }
+      capture();
+      const wrap = entry.clone.querySelector<HTMLElement>(
+        '.background-vocal-wrap',
+      )!;
+      entry.animation?.cancel();
+      entry.exiting = true;
+      changed = true;
+      if (this.shouldReduceMotion) {
+        this.removeBackgroundCarry(index);
+        return;
+      }
+      // Release its layout space now; the lead's spring absorbs the displacement.
+      const top = entry.clone.offsetTop;
+      const width = entry.clone.offsetWidth;
+      entry.clone.style.cssText += `;position:absolute;top:${top}px;width:${width}px;height:0;`;
+      entry.animation = wrap.animate(
+        [
+          {
+            opacity: getComputedStyle(wrap).opacity,
+            transform: getComputedStyle(wrap).transform,
+          },
+          { opacity: 0, transform: 'translateY(-6px)' },
+        ],
+        {
+          duration: BACKGROUND_EXIT_DURATION_MS,
+          easing: 'ease-out',
+          fill: 'forwards',
+        },
+      );
+      entry.animation.onfinish = () => {
+        if (this.backgroundCarries.get(index) === entry && entry.exiting)
+          this.removeBackgroundCarry(index);
+      };
+    });
+    desired.forEach(index => {
+      let entry = this.backgroundCarries.get(index);
+      if (!entry) {
+        const sourceLine = this._getLineElement(index);
+        const original = sourceLine?.querySelector<HTMLElement>(
+          '.background-vocal-container:not([data-bg-carried])',
+        );
+        const main = owner.querySelector<HTMLElement>('.main-vocal-container');
+        if (!sourceLine || !original || !main) return;
+        capture();
+        const oldTop =
+          this.backgroundCarryRestoreTops.get(index) ??
+          AmLyrics.getBackgroundCarryTop(original);
+        const style = getComputedStyle(original);
+        const clone = original.cloneNode(true) as HTMLElement;
+        clone.setAttribute('data-bg-carried', `${index}`);
+        clone.classList.replace('background-after', 'background-before');
+        clone.style.direction = style.direction;
+        clone.style.textAlign = style.textAlign;
+        clone.style.display = 'block';
+        for (const node of clone.querySelectorAll<HTMLElement>(
+          '.lyrics-word, .lyrics-syllable, .char, .char-motion',
+        )) {
+          node.classList.remove(
+            'shared-word-wipe',
+            'word-wipe-rtl',
+            'native-motion',
+            'highlight',
+            'finished',
+            'pre-highlight',
+            'word-started',
+            'normal-word-motion',
+          );
+          node.removeAttribute('data-glow');
+          for (const prop of [
+            'animation',
+            'background-position',
+            'background-size',
+            'background-color',
+            'transform',
+          ])
+            node.style.removeProperty(prop);
+        }
+        const { display } = original.style;
+        AmLyrics.resetSyllables(original);
+        original.setAttribute('data-bg-suspended', '');
+        original.style.display = 'none';
+        AmLyrics.invalidateVocalCache(sourceLine);
+        main.before(clone);
+        const wrap = clone.querySelector<HTMLElement>(
+          '.background-vocal-wrap',
+        )!;
+        wrap.style.opacity = '1';
+        wrap.style.transform = 'none';
+        clone.style.height = `${wrap.offsetHeight + 4}px`;
+        entry = {
+          original,
+          clone,
+          sourceLine,
+          owner,
+          display,
+          exiting: false,
+          fromTop: oldTop,
+        };
+        this.backgroundCarries.set(index, entry);
+        changed = true;
+      } else if (entry.owner !== owner) {
+        const main = owner.querySelector<HTMLElement>('.main-vocal-container');
+        if (main) {
+          capture();
+          const oldTop = AmLyrics.getBackgroundCarryTop(entry.clone);
+          entry.animation?.cancel();
+          main.before(entry.clone);
+          entry.fromTop = oldTop;
+          entry.owner = owner;
+          changed = true;
+        }
+      }
+      AmLyrics.updateSyllablesForLine(
+        entry.clone,
+        this.currentTime,
+        this.shouldReduceMotion,
+      );
+    });
+    if (before && changed) this.finishLyricLayout(before, true);
+    return changed;
   }
 
   private getPrimaryActiveLineIndex(activeIndices: number[]): number | null {
@@ -6144,31 +6570,23 @@ export class AmLyrics extends LitElement {
   ): number | null {
     if (!this.lyrics || this.lyrics.length === 0) return null;
 
-    const primaryIndex = activeIndices.length
+    const latest = activeIndices.length
       ? activeIndices[activeIndices.length - 1]
       : this.getLineIndexAtTime(time, this.lastActiveIndex);
-    if (primaryIndex === -1) return null;
-
-    // Guard: if new primary is ahead of current but they share the same
-    // end time, keep current to prevent bounce during overlaps.
-    const currentPrimaryIndex = AmLyrics.getLineIndexFromElement(
-      this.currentPrimaryActiveLine,
-    );
-    if (
-      currentPrimaryIndex !== null &&
-      primaryIndex > currentPrimaryIndex &&
-      this.lyrics[currentPrimaryIndex] &&
-      this.lyrics[primaryIndex] &&
-      this.lyrics[currentPrimaryIndex].endtime ===
-        this.lyrics[primaryIndex].endtime
-    ) {
-      const activeCount = this.findActiveLineIndices(time).length;
-      if (activeCount <= 3) {
-        return currentPrimaryIndex;
-      }
+    if (latest === -1) return null;
+    this._ensureLineDataCache();
+    // Keep a sustained earlier lead in view; a final-word overlap may yield.
+    for (const index of activeIndices) {
+      const data = this.cachedLineData?.[index];
+      if (
+        index < latest &&
+        data &&
+        data.mainEnd > time &&
+        data.overlapWordEnds.filter(end => end > time).length > 1
+      )
+        return index;
     }
-
-    return primaryIndex;
+    return latest;
   }
 
   private focusLine(
@@ -7712,7 +8130,8 @@ export class AmLyrics extends LitElement {
 
     const { classList } = syllable;
     const hadPreHighlight = classList.contains('pre-highlight');
-    const isRTL = classList.contains('rtl-text');
+    const isRTL =
+      classList.contains('rtl-text') || classList.contains('wipe-rtl');
     const charSpans = AmLyrics.getCachedCharSpans(syllable);
     const isFirstSyllable =
       syllable.getAttribute('data-syllable-index') === '0';
@@ -8109,6 +8528,10 @@ export class AmLyrics extends LitElement {
       syllables = Array.from(
         line.querySelectorAll<HTMLElement>('.lyrics-syllable.has-chars'),
       ).filter(syllable => {
+        const track = syllable.closest(
+          '[data-bg-suspended], [data-bg-carried]',
+        );
+        if (track && track !== line) return false;
         const word = AmLyrics.getWordElementForSyllable(syllable);
         // CJK has no reliable whitespace word boundaries. Keep each timed
         // segment's clock; only non-CJK split words share a motion clock.
@@ -8356,19 +8779,27 @@ export class AmLyrics extends LitElement {
         line.querySelectorAll<HTMLElement>(
           '.lyrics-word[data-virtual-word-start]',
         ),
-      ).map(element => {
-        const syllable = element.querySelector<HTMLElement>('.lyrics-syllable');
-        return {
-          element,
-          start: Number(element.dataset.virtualWordStart),
-          wipe: syllable ? AmLyrics.getWordWipe(syllable) : undefined,
-          normal: Boolean(
-            syllable &&
-              !syllable.matches('.has-chars, .line-synced') &&
-              !element.matches('.growable, .char-rise, .char-drag'),
-          ),
-        };
-      });
+      )
+        .filter(element => {
+          const track = element.closest(
+            '[data-bg-suspended], [data-bg-carried]',
+          );
+          return !track || track === line;
+        })
+        .map(element => {
+          const syllable =
+            element.querySelector<HTMLElement>('.lyrics-syllable');
+          return {
+            element,
+            start: Number(element.dataset.virtualWordStart),
+            wipe: syllable ? AmLyrics.getWordWipe(syllable) : undefined,
+            normal: Boolean(
+              syllable &&
+                !syllable.matches('.has-chars, .line-synced') &&
+                !element.matches('.growable, .char-rise, .char-drag'),
+            ),
+          };
+        });
       AmLyrics.motionWords.set(line, words);
     }
     words.forEach(({ element, start, wipe, normal }) => {
@@ -8387,8 +8818,13 @@ export class AmLyrics extends LitElement {
     let syllables: HTMLElement[] = (line as any)._cachedSyllableElements;
     if (!syllables) {
       syllables = Array.from(
-        line.querySelectorAll('.lyrics-syllable'),
-      ) as HTMLElement[];
+        line.querySelectorAll<HTMLElement>('.lyrics-syllable'),
+      ).filter(syllable => {
+        const track = syllable.closest(
+          '[data-bg-suspended], [data-bg-carried]',
+        );
+        return !track || track === line;
+      });
       for (let i = 0; i < syllables.length; i += 1) {
         const syllable = syllables[i];
         (syllable as any)._cachedStartTime = parseFloat(
@@ -8745,10 +9181,10 @@ export class AmLyrics extends LitElement {
 
     const isUnsynced = this.cachedIsUnsynced;
     const hasLeftAlignedLines = this.lyrics?.some(
-      line => line.alignment !== 'end',
+      line => !AmLyrics.isOppositeAgent(line),
     );
-    const hasRightAlignedLines = this.lyrics?.some(
-      line => line.alignment === 'end',
+    const hasRightAlignedLines = this.lyrics?.some(line =>
+      AmLyrics.isOppositeAgent(line),
     );
     const hasDuetLines = hasLeftAlignedLines && hasRightAlignedLines;
 
@@ -8835,9 +9271,10 @@ export class AmLyrics extends LitElement {
                     syllable.romanizedText &&
                     syllable.romanizedText.trim() !== syllable.text.trim()
                       ? html`<span
-                          class="lyrics-syllable transliteration no-chars ${syllable.lineSynced
-                            ? 'line-synced'
-                            : ''}"
+                          dir="auto"
+                          class="lyrics-syllable transliteration no-chars ${lineIsRTL
+                            ? 'wipe-rtl'
+                            : ''} ${syllable.lineSynced ? 'line-synced' : ''}"
                           data-start-time="${startTimeMs}"
                           data-end-time="${endTimeMs}"
                           data-duration="${durationMs}"
@@ -8975,9 +9412,10 @@ export class AmLyrics extends LitElement {
                   syllable.romanizedText &&
                   syllable.romanizedText.trim() !== syllable.text.trim()
                     ? html`<span
-                        class="lyrics-syllable transliteration no-chars ${groupLineSynced
-                          ? 'line-synced'
-                          : ''}"
+                        dir="auto"
+                        class="lyrics-syllable transliteration no-chars ${lineIsRTL
+                          ? 'wipe-rtl'
+                          : ''} ${groupLineSynced ? 'line-synced' : ''}"
                         data-start-time="${startTimeMs}"
                         data-end-time="${endTimeMs}"
                         data-duration="${durationMs}"
@@ -9058,11 +9496,7 @@ export class AmLyrics extends LitElement {
           line.romanizedText &&
           !line.text.some(s => s.romanizedText) &&
           line.romanizedText.trim() !== fullLineText
-            ? html`<div
-                class="lyrics-romanization-container ${lineIsRTL
-                  ? 'rtl-text'
-                  : ''}"
-              >
+            ? html`<div class="lyrics-romanization-container" dir="auto">
                 ${line.romanizedText}
               </div>`
             : '';
@@ -9121,7 +9555,7 @@ export class AmLyrics extends LitElement {
           ${maybeInstrumentalBlock}
           <div
             id="${lineId}"
-            class="lyrics-line ${line.alignment === 'end'
+            class="lyrics-line ${AmLyrics.isOppositeAgent(line)
               ? 'singer-right'
               : 'singer-left'} ${lineIsRTL ? 'rtl-text' : ''} ${hasBackground
               ? `bg-${bgPlacement}`
