@@ -9,7 +9,7 @@ import type {
   Syllable,
 } from './LyricsSources.js';
 
-const VERSION = '1.8.8';
+const VERSION = '1.8.9';
 const SPICY_LYRICS_CLIENT_KEY =
   'sl_pk_8nNuJf0L-xFUv8L5uU-pfin69WU4j3IzzV2-T3GPWKY';
 const SPOTIFY_TOKEN_URL =
@@ -17,6 +17,7 @@ const SPOTIFY_TOKEN_URL =
 const INSTRUMENTAL_THRESHOLD_MS = 7000; // Show dots for gaps >= 7s
 const FETCH_TIMEOUT_MS = 8000; // Default timeout for lyrics fetch requests
 const LRC_RED_TIMEOUT_MS = 3000;
+const BINIMUM_LOOKUP_TIMEOUT_MS = 3000;
 const SEEK_THRESHOLD_MS = 500;
 const SCROLL_ANIMATION_DURATION_MS = 350;
 const BACKGROUND_EXIT_DURATION_MS = 450;
@@ -2935,22 +2936,28 @@ export class AmLyrics extends LitElement {
         }
       }
 
+      const unisonIsrc = lrcRedResult?.isrc || resolvedMetadata.catalogIsrc;
+      if (
+        (resolvedMetadata.metadata || unisonIsrc) &&
+        !isMusicIdOnlyRequest &&
+        !hasWordSync(collectedSources)
+      ) {
+        const unisonResult = await AmLyrics.fetchLyricsFromUnison(
+          resolvedMetadata.metadata,
+          unisonIsrc,
+        );
+        if (unisonResult && unisonResult.lines.length > 0) {
+          collectedSources.push(unisonResult);
+          await this.publishAvailableSources(
+            collectedSources,
+            controller.signal,
+          );
+        }
+        if (controller.signal.aborted) return;
+      }
+
       if (resolvedMetadata?.metadata && !isMusicIdOnlyRequest) {
         const { title, artist } = resolvedMetadata.metadata;
-        if (collectedSources.length === 0 || !hasWordSync(collectedSources)) {
-          const unisonResult = await AmLyrics.fetchLyricsFromUnison(
-            resolvedMetadata.metadata,
-          );
-          if (unisonResult && unisonResult.lines.length > 0) {
-            collectedSources.push(unisonResult);
-            await this.publishAvailableSources(
-              collectedSources,
-              controller.signal,
-            );
-          }
-          if (controller.signal.aborted) return;
-        }
-
         if (!hasWordSync(collectedSources)) {
           const youLyResults = await AmLyrics.fetchLyricsFromYouLyPlus(
             title,
@@ -3269,21 +3276,26 @@ export class AmLyrics extends LitElement {
           if (spicyResult) newSources.push(spicyResult);
         }
 
-        if (resolvedMetadata.metadata) {
-          // Try Unison if not fetched
-          if (
-            !this.availableSources.some(s =>
-              s.source.toLowerCase().includes('unison'),
-            )
-          ) {
-            const unisonResult = await AmLyrics.fetchLyricsFromUnison(
-              resolvedMetadata.metadata,
-            );
-            if (unisonResult && unisonResult.lines.length > 0) {
-              newSources.push(unisonResult);
-            }
+        const unisonIsrc =
+          this.availableSources.find(s => s.source === 'lrc.red')?.isrc ||
+          resolvedMetadata.catalogIsrc;
+        if (
+          (resolvedMetadata.metadata || unisonIsrc) &&
+          !this.availableSources.some(s =>
+            s.source.toLowerCase().includes('unison'),
+          )
+        ) {
+          const unisonResult = await AmLyrics.fetchLyricsFromUnison(
+            resolvedMetadata.metadata,
+            unisonIsrc,
+          );
+          if (unisonResult && unisonResult.lines.length > 0) {
+            newSources.push(unisonResult);
           }
+          if (controller?.signal.aborted) return;
+        }
 
+        if (resolvedMetadata.metadata) {
           // Only a non-model Apple word result completes the KPoe upgrade search.
           if (
             !this.availableSources.some(
@@ -3481,6 +3493,34 @@ export class AmLyrics extends LitElement {
 
   private static spotifyTokenRequest?: Promise<string | null>;
 
+  private static async lookupSpotifyIdByIsrc(
+    isrc: string,
+    signal: AbortSignal,
+  ): Promise<string | undefined> {
+    if (signal.aborted) return undefined;
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    signal.addEventListener('abort', abort, { once: true });
+    const timeout = setTimeout(abort, BINIMUM_LOOKUP_TIMEOUT_MS);
+    try {
+      const response = await fetch(
+        `https://link.binimum.org/api/v1/isrc/${encodeURIComponent(isrc.trim())}`,
+        { signal: controller.signal },
+      );
+      if (!response.ok) return undefined;
+      const data = await response.json();
+      return typeof data?.spotify === 'string' &&
+        /^[A-Za-z0-9]{22}$/.test(data.spotify)
+        ? data.spotify
+        : undefined;
+    } catch {
+      return undefined;
+    } finally {
+      clearTimeout(timeout);
+      signal.removeEventListener('abort', abort);
+    }
+  }
+
   private static async getSpotifyToken(): Promise<string | null> {
     if (AmLyrics.spotifyToken && AmLyrics.spotifyToken.expiresAt > Date.now())
       return AmLyrics.spotifyToken.value;
@@ -3534,6 +3574,10 @@ export class AmLyrics extends LitElement {
     const timeout = setTimeout(abort, FETCH_TIMEOUT_MS);
     try {
       let trackId = spotifyId;
+      if (!trackId && isrc) {
+        trackId = await AmLyrics.lookupSpotifyIdByIsrc(isrc, controller.signal);
+        if (controller.signal.aborted) return null;
+      }
       if (!trackId) {
         let searchTerm = isrc ? `isrc:${isrc}` : '';
         if (!searchTerm && metadata?.title && metadata.artist)
@@ -4232,19 +4276,22 @@ export class AmLyrics extends LitElement {
   }
 
   private static async fetchLyricsFromUnison(
-    metadata: SongMetadata,
+    metadata?: SongMetadata,
+    isrc?: string,
   ): Promise<YouLyPlusLyricsResult | null> {
-    const title = metadata.title?.trim();
-    const artist = metadata.artist?.trim();
-    if (!title || !artist) return null;
+    const title = metadata?.title?.trim();
+    const artist = metadata?.artist?.trim();
+    const recordingIsrc = isrc?.trim();
+    if (!recordingIsrc && (!title || !artist)) return null;
 
     const params = new URLSearchParams();
-    params.append('song', title);
-    params.append('artist', artist);
-    if (metadata.album) {
+    if (recordingIsrc) params.append('isrc', recordingIsrc);
+    if (title) params.append('song', title);
+    if (artist) params.append('artist', artist);
+    if (metadata?.album) {
       params.append('album', metadata.album);
     }
-    if (metadata.durationMs && metadata.durationMs > 0) {
+    if (metadata?.durationMs && metadata.durationMs > 0) {
       params.append(
         'duration',
         Math.round(metadata.durationMs / 1000).toString(),
