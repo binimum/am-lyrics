@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>am-lyrics test</title>
+    <link rel="stylesheet" href="./testing.css" />
+  </head>
+  <body>
+    <main>
+      <nav aria-label="Test tracks"><ol id="tracks"></ol></nav>
+      <section class="workspace" aria-label="Selected song test">
+        <div class="song-heading">
+          <div>
+            <p id="case-number" class="eyebrow"></p>
+            <h2 id="song-title"></h2>
+            <p id="song-artist"></p>
+          </div>
+          <span id="clip-range" class="badge"></span>
+        </div>
+        <div class="preview" id="preview"></div>
+        <div class="transport">
+          <div class="transport-buttons">
+            <button id="previous" aria-label="Previous track">
+              ← Previous
+            </button>
+            <button id="play" class="primary" disabled>Play clip</button>
+            <button id="replay">Replay</button>
+            <button id="rewind">−3 seconds</button>
+            <button id="next" aria-label="Next track">Next →</button>
+          </div>
+          <div class="timeline">
+            <output id="position" for="seek">0:00.0</output>
+            <input
+              id="seek"
+              type="range"
+              min="0"
+              max="1"
+              step="0.01"
+              value="0"
+              aria-label="Playback position"
+            />
+            <span id="clip-end"></span>
+          </div>
+          <div class="settings">
+            <label><input type="checkbox" id="loop" checked /> Loop clip</label>
+            <label><input type="checkbox" id="auto-next" /> Auto next</label>
+            <label
+              ><input type="checkbox" id="romanization" /> Pronunciations</label
+            >
+            <label
+              ><input type="checkbox" id="translation" /> Translations</label
+            >
+            <label
+              >Position updates
+              <select id="cadence">
+                <option value="16">~60 Hz</option>
+                <option value="100">100 ms</option>
+                <option value="250" selected>250 ms</option>
+                <option value="1000">1 second</option>
+              </select>
+            </label>
+            <label
+              >Font size
+              <input
+                id="font-size"
+                type="number"
+                min="24"
+                max="120"
+                value="48"
+                step="2"
+              />
+              px</label
+            >
+            <label
+              >Preview width
+              <select id="width">
+                <option value="100%">Full</option>
+                <option value="390px">390 px</option>
+                <option value="768px">768 px</option>
+              </select></label
+            >
+          </div>
+        </div>
+        <footer>
+          <span id="status" role="status" aria-live="polite"
+            >Loading lyrics…</span
+          ><button id="reload">Reload sources</button>
+        </footer>
+      </section>
+    </main>
+    <script type="module" src="./testing.js"></script>
+  </body>
+</html>

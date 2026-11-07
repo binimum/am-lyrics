@@ -31,7 +31,7 @@ Or just use CDN (below).
   song-album="Uptown Special"
   song-duration="269000"
   query="Uptown Funk Mark Ronson"
-  current-time="0"
+  currenttime="0"
   duration=""
   highlight-color="#f00"
   font-family="'Inter', Arial, sans-serif"
@@ -53,13 +53,28 @@ Or just use CDN (below).
 | `song-artist`            | `string`  | `undefined` | Artist name for lrc.red and fallback providers |
 | `song-album`             | `string`  | `undefined` | Optional album name for provider matching |
 | `song-duration`          | `number`  | `undefined` | Optional song duration in milliseconds sent to LyricsPlus                                      |
-| `current-time`           | `number`  | `0`         | Current playback time in milliseconds                                                          |
+| `currenttime`            | `number`  | `0`         | Current playback time in milliseconds (`currentTime` property) |
+| `paused`                 | `boolean` | `false`     | Freeze playback interpolation and timed lyric effects when the player is paused |
 | `duration`               | `number`  | `undefined` | Playback timer duration in milliseconds. **Set to `-1` to reset/stop playback**                |
 | `highlight-color`        | `string`  | `"#fff"`    | Color for highlighted/active lyrics                                                            |
 | ~~`hide-source-footer`~~ | `boolean` | `false`     | Hide/show the source attribution footer                                                        |
 | `font-family`            | `string`  | `undefined` | Custom font family for lyrics                                                                  |
 | `autoscroll`             | `boolean` | `true`      | Enable automatic scrolling to active lyrics                                                    |
-| `interpolate`            | `boolean` | `true`      | Enable smooth word-by-word highlighting animation                                              |
+| `interpolate`            | `boolean` | `true`      | Schedule lyric transitions between playback position updates; set the property to `false` for host-driven timing |
+
+Send `currentTime` updates in milliseconds and set `paused` to match the player.
+After two advancing samples, the component schedules intervening lyric boundaries;
+it stops extrapolating if updates stop (750 ms to 5 seconds, depending on update cadence).
+Repeated identical positions also pause timed effects. Seeking still uses the supplied position.
+
+## Song test suite
+
+Run `npm run test:songs` to open `/testing/`, separate from the demo. The eight
+saved clips include their pronunciation and translation presets. Switch tracks,
+replay or loop a clip, scrub or rewind, compare sources, and change the playback
+update interval, font size or preview width. Playback is simulated without audio;
+lyrics and alternates are fetched from the usual live services. A URL hash such
+as `/testing/#4` opens a specific case.
 
 ## CSS Custom Properties (CSS Variables)
 

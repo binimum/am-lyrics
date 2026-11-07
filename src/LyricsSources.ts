@@ -44,6 +44,9 @@ export interface LyricsSourceResult {
     durationMs?: number;
   };
   contributors?: LyricsContributor[];
+  confidence?: string;
+  matchScore?: number;
+  matchedBy?: string;
 }
 
 // These providers express every timestamp in seconds, including whole numbers.
