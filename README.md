@@ -2,9 +2,7 @@
 
 [![npm](https://img.shields.io/npm/v/@uimaxbai/am-lyrics.svg)](https://www.npmjs.com/package/@uimaxbai/am-lyrics) [![npm](https://img.shields.io/npm/dt/@uimaxbai/am-lyrics.svg)](https://www.npmjs.com/package/@uimaxbai/am-lyrics) [![](https://data.jsdelivr.com/v1/package/npm/@uimaxbai/am-lyrics/badge)](https://www.jsdelivr.com/package/npm/@uimaxbai/am-lyrics)
 
-![Running on Monochrome in fullscreen](./demo.webp)
-
-<p align="center">Running on <a href="https://monochrome.tf">Monochrome</a> in fullscreen.</p>
+![Multiple songs with am-lyrics lyrics](./demo.avif)
 
 This webcomponent follows the [open-wc](https://github.com/open-wc/open-wc) recommendation.
 
@@ -67,14 +65,13 @@ After two advancing samples, the component schedules intervening lyric boundarie
 it stops extrapolating if updates stop (750 ms to 5 seconds, depending on update cadence).
 Repeated identical positions also pause timed effects. Seeking still uses the supplied position.
 
-## Song test suite
+## Sources
 
-Run `npm run test:songs` to open `/testing/`, separate from the demo. The eight
-saved clips include their pronunciation and translation presets. Switch tracks,
-replay or loop a clip, scrub or rewind, compare sources, and change the playback
-update interval, font size or preview width. Playback is simulated without audio;
-lyrics and alternates are fetched from the usual live services. A URL hash such
-as `/testing/#4` opens a specific case.
+Thank you to these providers who generously allow me to use their lyrics in my component:
+
+[lrc.red](https://lrc.red), [BiniLyrics](https://lyrics.binimum.org), [Spicy Lyrics](https://spicylyrics.org), [Unison](https://unison.boidu.dev), [LRCLib](https://lrclib.net/), [Genius](https://genius.com/)
+
+And also thank you to anyone I might have missed!
 
 ## CSS Custom Properties (CSS Variables)
 
@@ -123,14 +120,6 @@ am-lyrics {
   --am-lyrics-wide-selected-position: 20%;
 }
 ```
-
-## Sources
-
-Thank you to these providers who generously allow me to use their lyrics in my component:
-
-[lrc.red](https://lrc.red), [BiniLyrics](https://lyrics.binimum.org), [Spicy Lyrics](https://spicylyrics.org), [Unison](https://unison.boidu.dev), [LRCLib](https://lrclib.net/), [Genius](https://genius.com/)
-
-And also thank you to anyone I might have missed!
 
 ## Events
 
@@ -368,6 +357,12 @@ bun i
 
 ```bash
 npm start
+```
+
+### Open song test suite
+
+```bash
+npm run test:songs
 ```
 
 ### The usual
