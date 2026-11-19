@@ -38,6 +38,13 @@ Or just use CDN (below).
 ></am-lyrics>
 ```
 
+## Attribution
+
+The component includes a source footer by default, but if you do remove it programatically I would very much appreciate if you could leave some attribution somewhere (for example an About page) for the component! BUT:
+
+> [!NOTE]
+> If you do remove the source footer, you run the risk of improperly or not attributing the lyrics source(s), as well as leaving the songwriters out! For some sources, this is not permitted as per their Terms. See [Sources](#sources) below for attribution information. As such, the `hide-source-footer` property has been deprecated in the component. Of course, the easiest way to avoid this issue would just be to leave the footer in!
+
 ## Properties & Attributes
 
 | Property/Attribute       | Type      | Default     | Description                                                                                    |
