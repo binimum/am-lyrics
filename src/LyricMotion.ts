@@ -220,11 +220,11 @@ export function getCharacterFrames(
         : springProgress(time, response) *
           (1 - springProgress(time - hold, response));
       const x = (index - (count - 1) / 2) * 0.5 * 0.1 * emphasis * envelope;
-      const lift = 2.5 * emphasis * envelope;
+      const lift = 2.25 * emphasis * envelope;
       return {
         offset: frame / 60,
         x: x * metrics.fontSize * metrics.lift,
-        y: metrics.rise * rise - lift * metrics.lift,
+        y: 0.92 * metrics.rise * rise - lift * metrics.lift,
         scale: 1 + 0.1 * emphasis * envelope,
       };
     });

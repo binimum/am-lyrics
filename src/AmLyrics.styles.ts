@@ -179,11 +179,18 @@ export const lyricsStyles = css`
   }
 
   /* --- Line Container & Vocal Containers --- */
+  .lyrics-line.has-character-motion {
+    /* A second scale on the line moves glyph edges before their rise begins. */
+    --lyric-line-rest-scale: 1;
+  }
+
   .lyrics-line-container {
     position: relative;
     overflow-wrap: break-word;
     transform-origin: left bottom;
-    transform: scale(var(--am-lyrics-inactive-scale));
+    transform: scale(
+      var(--lyric-line-rest-scale, var(--am-lyrics-inactive-scale))
+    );
     transition:
       transform 0.7s ease,
       background-color 0.7s,
@@ -209,7 +216,7 @@ export const lyricsStyles = css`
   .background-vocal-container {
     --word-wipe-color: var(
       --am-lyrics-background-vocal-color,
-      color-mix(in srgb, var(--lyplus-text-primary) 75%, transparent)
+      color-mix(in srgb, var(--lyplus-text-primary) 70%, transparent)
     );
     --word-inactive-color: var(
       --am-lyrics-background-vocal-inactive-color,
@@ -300,7 +307,20 @@ export const lyricsStyles = css`
     transition:
       opacity 0.7s ease,
       transform 0.4s cubic-bezier(0.41, 0, 0.12, 0.99)
-        var(--lyrics-line-delay, 0ms);
+        var(--lyrics-line-delay, 0ms),
+      filter var(--scroll-duration, 350ms) ease-out;
+  }
+
+  /* Finish focusing during pre-scroll so stationary glyphs retain their ink
+     weight from the first sung frame through the start of the glow. */
+  .lyrics-line.has-character-motion.pre-active {
+    transition-duration:
+      var(--lyric-focus-duration, 180ms), 0.4s,
+      var(--lyric-focus-duration, 180ms);
+  }
+
+  .lyrics-line.has-character-motion.active:not(.scroll-exiting) {
+    transition-duration: 0ms, 0.4s, 0ms;
   }
 
   /* Non-overlapping phrases start receding with predictive scrolling. */
@@ -415,94 +435,48 @@ export const lyricsStyles = css`
     transition-duration: 120ms;
   }
 
-  /* --- Blur Effect for Inactive Lines --- */
-  .lyrics-container.blur-inactive-enabled:not(.not-focused)
-    .lyrics-line:not(.active):not(.pre-active):not(.lyrics-gap) {
-    filter: blur(var(--lyplus-blur-amount));
+  /* Use the deepest falloff beyond the measured neighbourhood as well. */
+  .lyrics-line[data-focus-distance='0'],
+  .lyrics-line[data-focus-distance='1'] {
+    --lyric-distance-opacity: 0.8;
+    --lyric-distance-blur: var(--lyplus-blur-amount-near);
   }
 
-  /* Viewport Virtualization: Strip expensive filters and animations from
-     offscreen lines.  IntersectionObserver toggles this class. */
-  .lyrics-line.far-line {
+  .lyrics-line[data-focus-distance='2'] {
+    --lyric-distance-opacity: 0.7;
+    --lyric-distance-blur: 0.043em;
+  }
+
+  .lyrics-line[data-focus-distance='3'] {
+    --lyric-distance-opacity: 0.58;
+    --lyric-distance-blur: 0.057em;
+  }
+
+  .lyrics-container:not(.is-unsynced):not(.not-focused)
+    .lyrics-line:not(.active, .pre-active, .lyrics-gap) {
+    opacity: var(--lyric-distance-opacity, 0.46);
+  }
+
+  .lyrics-container.blur-inactive-enabled:not(.not-focused)
+    .lyrics-line:not(
+      .active,
+      .pre-active,
+      .lyrics-gap,
+      [data-lyric-viewport='far']
+    ) {
+    filter: blur(var(--lyric-distance-blur, var(--lyplus-blur-amount)));
+  }
+
+  /* Stop filtering beyond the observer's viewport buffer. */
+  .lyrics-line[data-lyric-viewport='far'] {
     filter: none !important;
-    will-change: auto !important;
-    animation: none !important;
+    transition-property: opacity, transform !important;
   }
 
-  .lyrics-container.blur-inactive-enabled:not(.not-focused)
-    .lyrics-line.post-active-line:not(.lyrics-gap):not(.active):not(
-      .pre-active
-    ),
-  .lyrics-container.blur-inactive-enabled:not(.not-focused)
-    .lyrics-line.next-active-line:not(.lyrics-gap):not(.active):not(
-      .pre-active
-    ),
-  .lyrics-container.blur-inactive-enabled:not(.not-focused)
-    .lyrics-line.lyrics-activest:not(.active):not(.lyrics-gap):not(
-      .pre-active
-    ) {
-    filter: blur(var(--lyplus-blur-amount-near));
-  }
-
-  /* Distance falloff mirrors the native lyric stack: neighbouring lines
-     remain legible while lines farther from the focus gently recede. */
-  .lyrics-line.prev-2,
-  .lyrics-line.next-2 {
-    opacity: 0.7;
-  }
-
-  .lyrics-line.prev-3,
-  .lyrics-line.next-3 {
-    opacity: 0.58;
-  }
-
-  .lyrics-line.prev-4,
-  .lyrics-line.next-4 {
-    opacity: 0.46;
-  }
-
-  .lyrics-container.blur-inactive-enabled:not(.not-focused)
-    .lyrics-line.next-active-line:not(.lyrics-gap):not(.active):not(
-      .pre-active
-    ) {
-    filter: blur(0.028em);
-  }
-
-  .lyrics-container.blur-inactive-enabled:not(.not-focused)
-    .lyrics-line.next-2:not(.lyrics-gap):not(.active):not(.pre-active) {
-    filter: blur(0.028em);
-  }
-
-  .lyrics-container.blur-inactive-enabled:not(.not-focused)
-    .lyrics-line.next-3:not(.lyrics-gap):not(.active):not(.pre-active) {
-    filter: blur(0.05em);
-  }
-
-  .lyrics-container.blur-inactive-enabled:not(.not-focused)
-    .lyrics-line.next-4:not(.lyrics-gap):not(.active):not(.pre-active) {
-    filter: blur(var(--lyplus-blur-amount));
-  }
-
-  /* Unblur all lines when user is scrolling */
   .lyrics-container.user-scrolling .lyrics-line {
     transition: none !important;
     filter: none !important;
     opacity: 0.8 !important;
-  }
-
-  /* Keep the same playback-driven blur as the upcoming line enters focus. */
-  .lyrics-container.blur-inactive-enabled
-    .lyrics-line.pre-active:not(.progressive-unblur) {
-    filter: none !important;
-    opacity: 1;
-  }
-
-  .lyrics-line.progressive-unblur {
-    transition:
-      opacity 0.7s ease,
-      transform 0.4s cubic-bezier(0.41, 0, 0.12, 0.99)
-        var(--lyrics-line-delay, 0ms),
-      filter 0ms linear;
   }
 
   /* Word & syllable styles */
@@ -628,7 +602,8 @@ export const lyricsStyles = css`
   }
 
   /* --- Wipe Highlight Effect --- */
-  .lyrics-line.active:not(.lyrics-gap) .lyrics-syllable.highlight.no-chars,
+  .lyrics-line:is(.active, .pre-active):not(.lyrics-gap)
+    .lyrics-syllable.highlight.no-chars,
   .lyrics-line.active:not(.lyrics-gap) .lyrics-syllable.pre-highlight.no-chars {
     background-repeat: no-repeat;
     background-image: linear-gradient(
@@ -655,7 +630,8 @@ export const lyricsStyles = css`
     background-position: right 0%;
   }
 
-  .lyrics-line.active:not(.lyrics-gap) .lyrics-syllable.wipe-rtl.highlight,
+  .lyrics-line:is(.active, .pre-active):not(.lyrics-gap)
+    .lyrics-syllable.wipe-rtl.highlight,
   .lyrics-line.active:not(.lyrics-gap) .lyrics-syllable.wipe-rtl.pre-highlight {
     background-image: linear-gradient(
       -90deg,
@@ -762,10 +738,10 @@ export const lyricsStyles = css`
 
   .lyrics-line.active:not(.lyrics-gap)
     .background-vocal-container
-    .lyrics-syllable.finished:not(.has-chars),
+    .lyrics-syllable.finished:not(.has-chars, .transliteration),
   .lyrics-line.pre-active
     .background-vocal-container
-    .lyrics-syllable.finished:not(.has-chars) {
+    .lyrics-syllable.finished:not(.has-chars, .transliteration) {
     background-color: var(--word-wipe-color);
   }
 
@@ -831,6 +807,11 @@ export const lyricsStyles = css`
     user-select: none;
   }
 
+  .lyrics-line .lyrics-word .lyrics-syllable.transliteration:not(.line-synced) {
+    background-color: var(--word-inactive-color, var(--lyplus-text-secondary));
+    transition-property: transform !important;
+  }
+
   .lyrics-timed-romanization {
     display: block;
     direction: ltr;
@@ -856,7 +837,9 @@ export const lyricsStyles = css`
     transform: translate(0px, 0px) scale(1);
   }
 
-  .lyrics-line:not(.far-line) .char-motion.is-rising {
+  /* Prepare glyph layers outside the visible area. Keep them stable while
+     displayed so focus and rise do not switch how Chromium paints the text. */
+  .lyrics-line[data-lyric-viewport='near'] .char-motion {
     will-change: transform;
   }
 
@@ -1047,9 +1030,11 @@ export const lyricsStyles = css`
   /* Keep the dim glyphs painted while their wipe is still unscheduled. */
   .lyrics-line
     .lyrics-word
-    .lyrics-syllable.no-chars:not(.line-synced):not(.shared-word-wipe):not(
-      .highlight
-    ):not(.pre-highlight):not(.finished),
+    .lyrics-syllable.no-chars:not(
+      .line-synced,
+      .transliteration,
+      .shared-word-wipe
+    ):not(.highlight):not(.pre-highlight):not(.finished),
   .lyrics-line
     .lyrics-word
     .lyrics-syllable:not(.highlight):not(.pre-highlight):not(.finished)
@@ -1177,7 +1162,7 @@ export const lyricsStyles = css`
 
   .lyrics-container:not(.is-unsynced)
     .lyrics-line:not(.active):not(.pre-active):not(.lyrics-gap)
-    .lyrics-syllable.no-chars:not(.line-synced),
+    .lyrics-syllable.no-chars:not(.line-synced, .transliteration),
   .lyrics-container:not(.is-unsynced)
     .lyrics-line:not(.active):not(.pre-active):not(.lyrics-gap)
     .lyrics-syllable
@@ -1248,7 +1233,6 @@ export const lyricsStyles = css`
   }
 
   .lyrics-gap.active .main-vocal-container {
-    will-change: transform, opacity;
     opacity: var(--gap-opacity);
     transform: scale(var(--gap-scale));
     transition: none;
@@ -1286,49 +1270,26 @@ export const lyricsStyles = css`
     margin: 0 var(--lyplus-gap-dot-margin);
   }
 
-  /* Line-synced lyrics should fade in instantly/quickly instead of wiping */
+  /* Fade line-timed text with pre-scroll, including interrupted seeks. */
   .lyrics-syllable.line-synced {
     background: transparent !important;
     color: var(--lyplus-lyrics-palette) !important;
-    opacity: 55%;
+    opacity: 0.55;
+    transition: opacity 200ms ease-out !important;
   }
 
-  /* Line-timed text lights up with predictive scrolling. Keeping the same
-     animation in both states avoids restarting the fade at its timestamp. */
   .lyrics-line:is(.active, .pre-active) .lyrics-syllable.line-synced {
-    animation: fade-in-line 0.2s ease-out forwards !important;
-    color: var(--lyplus-text-primary) !important;
+    opacity: 1;
   }
 
-  .lyrics-line:is(.active, .pre-active) .lyrics-syllable.line-synced span.char {
-    background-image: none !important;
-    background-color: var(--lyplus-text-primary) !important;
-    transition: background-color 120ms ease-out !important;
-  }
-
-  @keyframes fade-in-line {
-    from {
-      opacity: 0.5;
-      color: var(--lyplus-text-secondary);
-    }
-    to {
-      opacity: 1;
-      color: var(--lyplus-lyrics-palette);
-    }
+  .lyrics-container.reduced-motion .lyrics-syllable.line-synced {
+    transition: none !important;
   }
 
   .lyrics-gap .lyrics-syllable {
     background-color: var(--lyplus-text-primary);
     background-clip: unset;
     opacity: var(--gap-dot-opacity, 0.25);
-  }
-
-  .lyrics-gap.active .lyrics-syllable.finished,
-  .lyrics-gap.gap-exiting .lyrics-syllable.finished,
-  .lyrics-gap:not(.active):not(.gap-exiting).post-active-line .lyrics-syllable,
-  .lyrics-gap:not(.active):not(.gap-exiting).lyrics-activest .lyrics-syllable {
-    background-color: var(--lyplus-text-primary);
-    animation: none !important;
   }
 
   /* Metadata & footer styles */
@@ -1794,10 +1755,10 @@ export const lyricsStyles = css`
   /* Skeleton loading */
   @keyframes skeleton-loading {
     0% {
-      background-color: rgba(255, 255, 255, 0.1);
+      opacity: 0.35;
     }
     100% {
-      background-color: rgba(255, 255, 255, 0.2);
+      opacity: 0.7;
     }
   }
 
@@ -1805,9 +1766,15 @@ export const lyricsStyles = css`
     height: 2.5em;
     margin: 0 0 var(--am-lyrics-line-spacing);
     border-radius: 16px;
+    background-color: rgba(255, 255, 255, 0.2);
     animation: skeleton-loading 1s linear infinite alternate;
     opacity: 0.7;
     width: 60%;
+  }
+
+  .reduced-motion .skeleton-line,
+  .reduced-motion .source-switch-svg.is-loading {
+    animation: none;
   }
 
   .skeleton-line:nth-child(even) {
@@ -1949,23 +1916,6 @@ export const lyricsStyles = css`
     }
     to {
       background-color: var(--lyplus-text-primary);
-    }
-  }
-
-  /* Character grow animation — translate3d+scale3d for smooth transform,
-     drop-shadow for glow */
-  @keyframes grow-static {
-    0%,
-    100% {
-      transform: scale3d(1.01, 1.01, 1.1) translateY(-0.05%);
-      text-shadow: 0 0 0
-        color-mix(in srgb, var(--lyplus-lyrics-palette), transparent 100%);
-    }
-    30%,
-    40% {
-      transform: scale3d(1.1, 1.1, 1.1) translateY(-0.05%);
-      text-shadow: 0 0 0.3em
-        color-mix(in srgb, var(--lyplus-lyrics-palette), transparent 50%);
     }
   }
 
